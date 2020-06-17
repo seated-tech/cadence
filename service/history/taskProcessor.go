@@ -75,6 +75,9 @@ type (
 		workerNotificationChans []chan struct{}
 		// duplicate numOfWorker from config.TimerTaskWorkerCount for dynamic config works correctly
 		numOfWorker int
+
+		//test
+		domainMetricsScope metrics.Scope
 	}
 )
 
@@ -117,9 +120,16 @@ func newTaskProcessor(
 		workerNotificationChans: workerNotificationChans,
 		retryPolicy:             common.CreatePersistanceRetryPolicy(),
 		numOfWorker:             options.workerCount,
+
+		//test
+		domainMetricsScope: createNewMetricsScope(shard.GetMetricsClient()),
 	}
 
 	return base
+}
+
+func createNewMetricsScope(client metrics.Client) metrics.Scope {
+	return client.Scope(1).Tagged(metrics.DomainTag("test-domain"))
 }
 
 func (t *taskProcessor) start() {
