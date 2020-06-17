@@ -129,7 +129,7 @@ func newTaskProcessor(
 }
 
 func createNewMetricsScope(client metrics.Client) map[int]metrics.Scope {
-	var metricsScopeMap map[int]metrics.Scope
+	metricsScopeMap := map[int]metrics.Scope{}
 
 	start := metrics.TransferQueueProcessorScope
 	end := metrics.TimerStandbyTaskWorkflowBackoffTimerScope
