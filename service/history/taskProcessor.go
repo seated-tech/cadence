@@ -259,8 +259,8 @@ func (t *taskProcessor) processTaskOnce(
 	}
 
 	startTime := t.timeSource.Now()
-	scopeIdx, err := task.processor.process(task)
-	scope := t.metricsClient.Scope(scopeIdx)
+	_, err := task.processor.process(task)
+	scope := t.domainMetricsScope
 	if task.shouldProcessTask {
 		scope.IncCounter(metrics.TaskRequests)
 		scope.RecordTimer(metrics.TaskProcessingLatency, time.Since(startTime))
