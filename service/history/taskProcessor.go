@@ -77,7 +77,7 @@ type (
 		numOfWorker int
 
 		//test
-		domainMetricsScope metrics.Scope
+		domainMetricsScope map[int]metrics.Scope
 	}
 )
 
@@ -128,8 +128,15 @@ func newTaskProcessor(
 	return base
 }
 
-func createNewMetricsScope(client metrics.Client) metrics.Scope {
-	return client.Scope(1).Tagged(metrics.DomainTag("test-domain"))
+func createNewMetricsScope(client metrics.Client) map[int]metrics.Scope {
+	var metricsScopeMap map[int]metrics.Scope
+
+	start := metrics.TransferQueueProcessorScope
+	end := metrics.TimerStandbyTaskWorkflowBackoffTimerScope
+	for i := start; i < end; i++ {
+		metricsScopeMap[i] = client.Scope(i).Tagged(metrics.DomainTag("test-domain"))
+	}
+	return metricsScopeMap
 }
 
 func (t *taskProcessor) start() {
@@ -259,8 +266,11 @@ func (t *taskProcessor) processTaskOnce(
 	}
 
 	startTime := t.timeSource.Now()
-	_, err := task.processor.process(task)
-	scope := t.domainMetricsScope
+	scopeIdx, err := task.processor.process(task)
+	scope, ok := t.domainMetricsScope[scopeIdx]
+	if !ok {
+		scope = t.metricsClient.Scope(scopeIdx)
+	}
 	if task.shouldProcessTask {
 		scope.IncCounter(metrics.TaskRequests)
 		scope.RecordTimer(metrics.TaskProcessingLatency, time.Since(startTime))
