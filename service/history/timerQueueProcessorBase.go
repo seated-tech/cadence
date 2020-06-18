@@ -351,8 +351,10 @@ func (t *timerQueueProcessorBase) readAndFanoutTimerTasks() (*persistence.TimerT
 		return nil, err
 	}
 
+	t.metricsScope.RecordTimer(metrics.TaskLoadBatchSizeTimer, time.Duration(len(timerTasks)))
+	submitTime := t.timeSource.Now()
 	for _, task := range timerTasks {
-		if submitted := t.submitTask(task); !submitted {
+		if submitted := t.submitTask(task, submitTime); !submitted {
 			return nil, nil
 		}
 		select {
@@ -372,6 +374,7 @@ func (t *timerQueueProcessorBase) readAndFanoutTimerTasks() (*persistence.TimerT
 
 func (t *timerQueueProcessorBase) submitTask(
 	taskInfo task.Info,
+	submitTime time.Time,
 ) bool {
 	if !t.isPriorityTaskProcessorEnabled() {
 		return t.taskProcessor.addTask(
@@ -379,6 +382,7 @@ func (t *timerQueueProcessorBase) submitTask(
 				t.timerProcessor,
 				taskInfo,
 				initializeLoggerForTask(t.shard.GetShardID(), taskInfo, t.logger),
+				submitTime,
 			),
 		)
 	}
