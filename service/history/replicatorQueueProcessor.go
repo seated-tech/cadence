@@ -451,7 +451,7 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 
 		err = backoff.Retry(op, p.retryPolicy, common.IsPersistenceTransientError)
 		if err != nil {
-			p.logger.Debug("Failed to get replication task. Return what we have so far.", tag.Error(err))
+			p.logger.Info("Failed to get replication task. Return what we have so far.", tag.Error(err))
 			hasMore = true
 			break
 		}
