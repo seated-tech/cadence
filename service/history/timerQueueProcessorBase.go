@@ -260,7 +260,14 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 	))
 	defer redispatchTimer.Stop()
 
+	lastEventStartTime := time.Time{}
 	for {
+		currentTime := t.timeSource.Now()
+		if !lastEventStartTime.IsZero() {
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventLatency, currentTime.Sub(lastEventStartTime))
+		}
+		lastEventStartTime = currentTime
+
 		// Wait until one of four things occurs:
 		// 1. we get notified of a new message
 		// 2. the timer gate fires (message scheduled to be delivered)
@@ -324,6 +331,10 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			t.newTimeLock.Unlock()
 			// New Timer has arrived.
 			t.metricsClient.IncCounter(t.scope, metrics.NewTimerNotifyCounter)
+			now := t.timeSource.Now()
+			if newTime.Before(now) {
+				t.metricsScope.RecordTimer(metrics.TimerQueueNotifyLatency, now.Sub(newTime))
+			}
 			t.timerGate.Update(newTime)
 		case <-redispatchTimer.C:
 			redispatchTimer.Reset(backoff.JitDuration(
@@ -336,6 +347,7 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 }
 
 func (t *timerQueueProcessorBase) readAndFanoutTimerTasks() (*persistence.TimerTaskInfo, error) {
+	readStartTime := t.timeSource.Now()
 	ctx, cancel := ctx.WithTimeout(ctx.Background(), loadTimerTaskThrottleRetryDelay)
 	if err := t.rateLimiter.Wait(ctx); err != nil {
 		cancel()
@@ -351,6 +363,8 @@ func (t *timerQueueProcessorBase) readAndFanoutTimerTasks() (*persistence.TimerT
 		return nil, err
 	}
 
+	t.metricsScope.RecordTimer(metrics.TimerQueueReadBackoffLatency, t.lastPollTime.Sub(readStartTime))
+	t.metricsScope.RecordTimer(metrics.TimerQueueReadLatency, time.Since(t.lastPollTime))
 	t.metricsScope.RecordTimer(metrics.TaskLoadBatchSizeTimer, time.Duration(len(timerTasks)))
 	submitTime := t.timeSource.Now()
 	for _, task := range timerTasks {

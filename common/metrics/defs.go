@@ -1657,6 +1657,11 @@ const (
 	TransferTaskThrottledCounter
 	TimerTaskThrottledCounter
 
+	TimerQueueEventLatency
+	TimerQueueReadBackoffLatency
+	TimerQueueReadLatency
+	TimerQueueNotifyLatency
+
 	ActivityE2ELatency
 	AckLevelUpdateCounter
 	AckLevelUpdateFailedCounter
@@ -2076,6 +2081,10 @@ var MetricDefs = map[ServiceIdx]map[int]metricDefinition{
 		TaskRedispatchQueuePendingTasksTimer:              {metricName: "task_redispatch_queue_pending_tasks", metricType: Timer},
 		TransferTaskThrottledCounter:                      {metricName: "transfer_task_throttled_counter", metricType: Counter},
 		TimerTaskThrottledCounter:                         {metricName: "timer_task_throttled_counter", metricType: Counter},
+		TimerQueueEventLatency:                            {metricName: "timer_queue_event_latency", metricType: Timer},
+		TimerQueueReadBackoffLatency:                      {metricName: "timer_queue_read_backoff_latency", metricType: Counter},
+		TimerQueueReadLatency:                             {metricName: "timer_queue_read_latency", metricType: Timer},
+		TimerQueueNotifyLatency:                           {metricName: "timer_queue_notify_latency", metricType: Timer},
 		ActivityE2ELatency:                                {metricName: "activity_end_to_end_latency", metricType: Timer},
 		AckLevelUpdateCounter:                             {metricName: "ack_level_update", metricType: Counter},
 		AckLevelUpdateFailedCounter:                       {metricName: "ack_level_update_failed", metricType: Counter},
