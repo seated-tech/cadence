@@ -1658,6 +1658,14 @@ const (
 	TimerTaskThrottledCounter
 
 	TimerQueueEventLatency
+	TimerQueueEventWaitLatency
+	TimerQueueEventShutdownLatency
+	TimerQueueEventFinishLatency
+	TimerQueueEventLoadTaskLatency
+	TimerQueueEventPollLatency
+	TimerQueueEventUpdateAckLatency
+	TimerQueueEventNewTimerLatency
+	TimerQueueEventRedispatchLatency
 	TimerQueueReadBackoffLatency
 	TimerQueueReadLatency
 	TimerQueueNotifyLatency
@@ -2082,6 +2090,14 @@ var MetricDefs = map[ServiceIdx]map[int]metricDefinition{
 		TransferTaskThrottledCounter:                      {metricName: "transfer_task_throttled_counter", metricType: Counter},
 		TimerTaskThrottledCounter:                         {metricName: "timer_task_throttled_counter", metricType: Counter},
 		TimerQueueEventLatency:                            {metricName: "timer_queue_event_latency", metricType: Timer},
+		TimerQueueEventWaitLatency:                        {metricName: "timer_queue_event_wait_latency", metricType: Timer},
+		TimerQueueEventShutdownLatency:                    {metricName: "timer_queue_event_shutdown_latency", metricType: Timer},
+		TimerQueueEventFinishLatency:                      {metricName: "timer_queue_event_finish_latency", metricType: Timer},
+		TimerQueueEventLoadTaskLatency:                    {metricName: "timer_queue_event_load_task_latency", metricType: Timer},
+		TimerQueueEventPollLatency:                        {metricName: "timer_queue_event_poll_latency", metricType: Timer},
+		TimerQueueEventUpdateAckLatency:                   {metricName: "timer_queue_event_update_ack_latency", metricType: Timer},
+		TimerQueueEventNewTimerLatency:                    {metricName: "timer_queue_event_new_timer_latency", metricType: Timer},
+		TimerQueueEventRedispatchLatency:                  {metricName: "timer_queue_event_redispatch_latency", metricType: Timer},
 		TimerQueueReadBackoffLatency:                      {metricName: "timer_queue_read_backoff_latency", metricType: Counter},
 		TimerQueueReadLatency:                             {metricName: "timer_queue_read_latency", metricType: Timer},
 		TimerQueueNotifyLatency:                           {metricName: "timer_queue_notify_latency", metricType: Timer},

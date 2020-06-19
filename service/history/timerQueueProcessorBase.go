@@ -276,23 +276,33 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 		//
 		select {
 		case <-t.shutdownCh:
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			t.logger.Debug("Timer queue processor pump shutting down.")
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventShutdownLatency, t.timeSource.Now().Sub(eventStartTime))
 			return nil
 		case <-t.timerQueueAckMgr.getFinishedChan():
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			// timer queue ack manager indicate that all task scanned
 			// are finished and no more tasks
 			// use a separate goroutine since the caller hold the shutdownWG
 			go t.Stop()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventFinishLatency, t.timeSource.Now().Sub(eventStartTime))
 			return nil
 		case <-t.timerGate.FireChan():
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			if !t.isPriorityTaskProcessorEnabled() || t.redispatchQueue.Len() <= t.config.TimerProcessorMaxRedispatchQueueSize() {
 				lookAheadTimer, err := t.readAndFanoutTimerTasks()
 				if err != nil {
+					t.metricsScope.RecordTimer(metrics.TimerQueueEventLoadTaskLatency, t.timeSource.Now().Sub(eventStartTime))
 					return err
 				}
 				if lookAheadTimer != nil {
 					t.timerGate.Update(lookAheadTimer.VisibilityTimestamp)
 				}
+				t.metricsScope.RecordTimer(metrics.TimerQueueEventLoadTaskLatency, t.timeSource.Now().Sub(eventStartTime))
 				continue
 			}
 
@@ -300,7 +310,10 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			t.redispatchTasks()
 			// re-enqueue the event to see if we need keep re-dispatching or load new tasks from persistence
 			t.notifyNewTimer(time.Time{})
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventLoadTaskLatency, t.timeSource.Now().Sub(eventStartTime))
 		case <-pollTimer.C:
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			pollTimer.Reset(backoff.JitDuration(
 				t.config.TimerProcessorMaxPollInterval(),
 				t.config.TimerProcessorMaxPollIntervalJitterCoefficient(),
@@ -308,13 +321,17 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			if t.lastPollTime.Add(t.config.TimerProcessorMaxPollInterval()).Before(t.timeSource.Now()) {
 				lookAheadTimer, err := t.readAndFanoutTimerTasks()
 				if err != nil {
+					t.metricsScope.RecordTimer(metrics.TimerQueueEventPollLatency, t.timeSource.Now().Sub(eventStartTime))
 					return err
 				}
 				if lookAheadTimer != nil {
 					t.timerGate.Update(lookAheadTimer.VisibilityTimestamp)
 				}
 			}
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventPollLatency, t.timeSource.Now().Sub(eventStartTime))
 		case <-updateAckTimer.C:
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			updateAckTimer.Reset(backoff.JitDuration(
 				t.config.TimerProcessorUpdateAckInterval(),
 				t.config.TimerProcessorUpdateAckIntervalJitterCoefficient(),
@@ -322,9 +339,13 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			if err := t.timerQueueAckMgr.updateAckLevel(); err == shard.ErrShardClosed {
 				// shard is closed, shutdown timerQProcessor and bail out
 				go t.Stop()
+				t.metricsScope.RecordTimer(metrics.TimerQueueEventUpdateAckLatency, t.timeSource.Now().Sub(eventStartTime))
 				return err
 			}
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventUpdateAckLatency, t.timeSource.Now().Sub(eventStartTime))
 		case <-t.newTimerCh:
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			t.newTimeLock.Lock()
 			newTime := t.newTime
 			t.newTime = emptyTime
@@ -332,16 +353,20 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			// New Timer has arrived.
 			t.metricsClient.IncCounter(t.scope, metrics.NewTimerNotifyCounter)
 			now := t.timeSource.Now()
-			if newTime.Before(now) {
+			if !newTime.IsZero() && newTime.Before(now) {
 				t.metricsScope.RecordTimer(metrics.TimerQueueNotifyLatency, now.Sub(newTime))
 			}
 			t.timerGate.Update(newTime)
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventNewTimerLatency, t.timeSource.Now().Sub(eventStartTime))
 		case <-redispatchTimer.C:
+			eventStartTime := t.timeSource.Now()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventWaitLatency, eventStartTime.Sub(currentTime))
 			redispatchTimer.Reset(backoff.JitDuration(
 				t.config.TimerProcessorRedispatchInterval(),
 				t.config.TimerProcessorRedispatchIntervalJitterCoefficient(),
 			))
 			t.redispatchTasks()
+			t.metricsScope.RecordTimer(metrics.TimerQueueEventRedispatchLatency, t.timeSource.Now().Sub(eventStartTime))
 		}
 	}
 }
