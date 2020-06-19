@@ -468,6 +468,12 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 		time.Duration(p.shard.GetTransferMaxReadLevel()-readLevel),
 	)
 
+	if p.shard.GetTransferMaxReadLevel()-readLevel > 1000000 {
+		p.logger.Warn("replication tasks are lagging too much",
+			tag.ShardID(p.shard.GetShardID()),
+			tag.Value(taskInfoList))
+	}
+
 	p.metricsClient.RecordTimer(
 		metrics.ReplicatorQueueProcessorScope,
 		metrics.ReplicationTasksFetched,
@@ -479,6 +485,12 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 		metrics.ReplicationTasksReturned,
 		time.Duration(len(replicationTasks)),
 	)
+
+	if len(taskInfoList) > 0 && len(replicationTasks) == 0 {
+		p.logger.Warn("No replication task generated from replication queue",
+			tag.ShardID(p.shard.GetShardID()),
+			tag.Value(taskInfoList))
+	}
 
 	if err := p.shard.UpdateClusterReplicationLevel(
 		pollingCluster,
@@ -657,6 +669,11 @@ func (p *replicatorQueueProcessorImpl) generateHistoryReplicationTask(
 					common.IntPtr(p.shard.GetShardID()),
 				)
 				if err != nil {
+					p.logger.Error("Failed to get workflow history",
+						tag.TaskID(task.GetTaskID()),
+						tag.WorkflowDomainID(task.GetDomainID()),
+						tag.WorkflowID(task.GetWorkflowID()),
+						tag.WorkflowRunID(task.GetRunID()))
 					return nil, err
 				}
 				if newRunID != "" {
@@ -677,6 +694,11 @@ func (p *replicatorQueueProcessorImpl) generateHistoryReplicationTask(
 				task.Version,
 			)
 			if err != nil {
+				p.logger.Error("Failed to get workflow version history",
+					tag.TaskID(task.GetTaskID()),
+					tag.WorkflowDomainID(task.GetDomainID()),
+					tag.WorkflowID(task.GetWorkflowID()),
+					tag.WorkflowRunID(task.GetRunID()))
 				return nil, err
 			}
 
@@ -691,6 +713,11 @@ func (p *replicatorQueueProcessorImpl) generateHistoryReplicationTask(
 				task.NextEventID,
 			)
 			if err != nil {
+				p.logger.Error("Failed to get workflow history events",
+					tag.TaskID(task.GetTaskID()),
+					tag.WorkflowDomainID(task.GetDomainID()),
+					tag.WorkflowID(task.GetWorkflowID()),
+					tag.WorkflowRunID(task.GetRunID()))
 				return nil, err
 			}
 
@@ -703,6 +730,11 @@ func (p *replicatorQueueProcessorImpl) generateHistoryReplicationTask(
 					common.FirstEventID+1,
 				)
 				if err != nil {
+					p.logger.Error("Failed to get workflow history events for new runs",
+						tag.TaskID(task.GetTaskID()),
+						tag.WorkflowDomainID(task.GetDomainID()),
+						tag.WorkflowID(task.GetWorkflowID()),
+						tag.WorkflowRunID(task.GetRunID()))
 					return nil, err
 				}
 			}
