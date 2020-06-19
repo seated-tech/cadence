@@ -208,8 +208,15 @@ func (p *queueProcessorBase) processorPump() {
 	))
 	defer redispatchTimer.Stop()
 
+	lastEventStartTime := time.Time{}
 processorPumpLoop:
 	for {
+		currentTime := p.timeSource.Now()
+		if !lastEventStartTime.IsZero() {
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventLatency, currentTime.Sub(lastEventStartTime))
+		}
+		lastEventStartTime = currentTime
+
 		select {
 		case <-p.shutdownCh:
 			break processorPumpLoop
@@ -217,8 +224,11 @@ processorPumpLoop:
 			// use a separate gorouting since the caller hold the shutdownWG
 			go p.Stop()
 		case <-p.notifyCh:
+			eventStartTime := p.timeSource.Now()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventWaitLatency, eventStartTime.Sub(currentTime))
 			if !p.isPriorityTaskProcessorEnabled() || p.redispatchQueue.Len() <= p.options.MaxRedispatchQueueSize() {
 				p.processBatch()
+				p.metricsScope.RecordTimer(metrics.QueueProcessorEventLoadTaskLatency, eventStartTime.Sub(currentTime))
 				continue
 			}
 
@@ -226,7 +236,10 @@ processorPumpLoop:
 			p.redispatchTasks()
 			// re-enqueue the event to see if we need keep re-dispatching or load new tasks from persistence
 			p.notifyNewTask()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventLoadTaskLatency, eventStartTime.Sub(currentTime))
 		case <-pollTimer.C:
+			eventStartTime := p.timeSource.Now()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventWaitLatency, eventStartTime.Sub(currentTime))
 			pollTimer.Reset(backoff.JitDuration(
 				p.options.MaxPollInterval(),
 				p.options.MaxPollIntervalJitterCoefficient(),
@@ -234,7 +247,10 @@ processorPumpLoop:
 			if p.lastPollTime.Add(p.options.MaxPollInterval()).Before(p.timeSource.Now()) {
 				p.processBatch()
 			}
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventPollLatency, p.timeSource.Now().Sub(eventStartTime))
 		case <-updateAckTimer.C:
+			eventStartTime := p.timeSource.Now()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventWaitLatency, eventStartTime.Sub(currentTime))
 			updateAckTimer.Reset(backoff.JitDuration(
 				p.options.UpdateAckInterval(),
 				p.options.UpdateAckIntervalJitterCoefficient(),
@@ -242,14 +258,19 @@ processorPumpLoop:
 			if err := p.ackMgr.updateQueueAckLevel(); err == shard.ErrShardClosed {
 				// shard is no longer owned by this instance, bail out
 				go p.Stop()
+				p.metricsScope.RecordTimer(metrics.QueueProcessorEventUpdateAckLatency, p.timeSource.Now().Sub(eventStartTime))
 				break processorPumpLoop
 			}
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventUpdateAckLatency, p.timeSource.Now().Sub(eventStartTime))
 		case <-redispatchTimer.C:
+			eventStartTime := p.timeSource.Now()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventWaitLatency, eventStartTime.Sub(currentTime))
 			redispatchTimer.Reset(backoff.JitDuration(
 				p.options.RedispatchInterval(),
 				p.options.RedispatchIntervalJitterCoefficient(),
 			))
 			p.redispatchTasks()
+			p.metricsScope.RecordTimer(metrics.QueueProcessorEventRedispatchLatency, p.timeSource.Now().Sub(eventStartTime))
 		}
 	}
 
