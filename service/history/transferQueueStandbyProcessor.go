@@ -72,9 +72,9 @@ func newTransferQueueStandbyProcessor(
 		UpdateAckInterval:                   config.TransferProcessorUpdateAckInterval,
 		UpdateAckIntervalJitterCoefficient:  config.TransferProcessorUpdateAckIntervalJitterCoefficient,
 		MaxRetryCount:                       config.TransferTaskMaxRetryCount,
-		RedispatchInterval:                  config.TransferProcessorRedispatchInterval,
-		RedispatchIntervalJitterCoefficient: config.TransferProcessorRedispatchIntervalJitterCoefficient,
-		MaxRedispatchQueueSize:              config.TransferProcessorMaxRedispatchQueueSize,
+		RedispatchInterval:                  config.TransferProcessorRedispatchInterval(),
+		RedispatchIntervalJitterCoefficient: config.TransferProcessorRedispatchIntervalJitterCoefficient(),
+		MaxRedispatchQueueSize:              config.TransferProcessorMaxRedispatchQueueSize(),
 		EnablePriorityTaskProcessor:         config.TransferProcessorEnablePriorityTaskProcessor,
 		MetricScope:                         metrics.TransferStandbyQueueProcessorScope,
 	}
