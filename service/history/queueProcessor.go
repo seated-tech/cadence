@@ -202,11 +202,11 @@ func (p *queueProcessorBase) processorPump() {
 	))
 	defer updateAckTimer.Stop()
 
-	redispatchTimer := time.NewTimer(backoff.JitDuration(
-		p.options.RedispatchInterval,
-		p.options.RedispatchIntervalJitterCoefficient,
-	))
-	defer redispatchTimer.Stop()
+	// redispatchTimer := time.NewTimer(backoff.JitDuration(
+	// 	p.options.RedispatchInterval,
+	// 	p.options.RedispatchIntervalJitterCoefficient,
+	// ))
+	// defer redispatchTimer.Stop()
 
 processorPumpLoop:
 	for {
@@ -244,12 +244,12 @@ processorPumpLoop:
 				go p.Stop()
 				break processorPumpLoop
 			}
-		case <-redispatchTimer.C:
-			redispatchTimer.Reset(backoff.JitDuration(
-				p.options.RedispatchInterval,
-				p.options.RedispatchIntervalJitterCoefficient,
-			))
-			p.redispatchTasks()
+			// case <-redispatchTimer.C:
+			// 	redispatchTimer.Reset(backoff.JitDuration(
+			// 		p.options.RedispatchInterval,
+			// 		p.options.RedispatchIntervalJitterCoefficient,
+			// 	))
+			// 	p.redispatchTasks()
 		}
 	}
 

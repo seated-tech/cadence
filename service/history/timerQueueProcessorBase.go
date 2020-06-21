@@ -255,13 +255,13 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 	defer updateAckTimer.Stop()
 
 	redispatchQueueMaxSize := t.config.TimerProcessorMaxRedispatchQueueSize()
-	redispatchInterval := t.config.TimerProcessorRedispatchInterval()
-	redispatchIntervalJitterCoefficient := t.config.TimerProcessorRedispatchIntervalJitterCoefficient()
-	redispatchTimer := time.NewTimer(backoff.JitDuration(
-		redispatchInterval,
-		redispatchIntervalJitterCoefficient,
-	))
-	defer redispatchTimer.Stop()
+	// redispatchInterval := t.config.TimerProcessorRedispatchInterval()
+	// redispatchIntervalJitterCoefficient := t.config.TimerProcessorRedispatchIntervalJitterCoefficient()
+	// redispatchTimer := time.NewTimer(backoff.JitDuration(
+	// 	redispatchInterval,
+	// 	redispatchIntervalJitterCoefficient,
+	// ))
+	// defer redispatchTimer.Stop()
 
 	for {
 		// Wait until one of four things occurs:
@@ -328,12 +328,12 @@ func (t *timerQueueProcessorBase) internalProcessor() error {
 			// New Timer has arrived.
 			t.metricsClient.IncCounter(t.scope, metrics.NewTimerNotifyCounter)
 			t.timerGate.Update(newTime)
-		case <-redispatchTimer.C:
-			redispatchTimer.Reset(backoff.JitDuration(
-				redispatchInterval,
-				redispatchIntervalJitterCoefficient,
-			))
-			t.redispatchTasks()
+			// case <-redispatchTimer.C:
+			// 	redispatchTimer.Reset(backoff.JitDuration(
+			// 		redispatchInterval,
+			// 		redispatchIntervalJitterCoefficient,
+			// 	))
+			// 	t.redispatchTasks()
 		}
 	}
 }
