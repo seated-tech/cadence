@@ -443,8 +443,8 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 	readLevel := lastReadTaskID
 	for _, taskInfo := range taskInfoList {
 
-		if taskInfo.GetDomainID() == "9b1388d1-6805-4819-baa5-45b2c34524df" &&
-			p.timeSource.Now().Sub(taskInfo.GetVisibilityTimestamp()) > 3 * time.Hour {
+		if taskInfo.GetDomainID() == "9b1388d1-6805-4819-baa5-45b2c34524df" ||
+			taskInfo.GetDomainID() == "becfcf74-6d45-431f-98bb-03e3a1137a44" {
 			readLevel = taskInfo.GetTaskID()
 			continue
 		}
