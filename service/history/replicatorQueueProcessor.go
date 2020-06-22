@@ -462,7 +462,7 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 	}
 
 	// Note this is a very rough indicator of how much the remote DC is behind on this shard.
-	p.metricsClient.Scope(metrics.ReplicatorQueueProcessorScope, tag.ShardID()).RecordTimer(
+	p.metricsClient.RecordTimer(
 		metrics.ReplicatorQueueProcessorScope,
 		metrics.ReplicationTasksLag,
 		time.Duration(p.shard.GetTransferMaxReadLevel()-readLevel),

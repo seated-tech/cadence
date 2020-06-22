@@ -334,7 +334,7 @@ func (t *taskProcessor) ackTaskOnce(
 		scope.RecordTimer(metrics.TaskQueueLatency, time.Since(task.task.GetVisibilityTimestamp()))
 		scope.RecordTimer(metrics.TaskLoadLatency, task.startTime.Sub(task.task.GetVisibilityTimestamp()))
 
-		if time.Since(task.task.GetVisibilityTimestamp()) > 240 * time.Hour {
+		if time.Since(task.task.GetVisibilityTimestamp()) > 240*time.Hour {
 			task.logger.Warn("Task lag large than 10 days")
 		}
 	}
