@@ -317,6 +317,10 @@ func (t *taskBase) Ack() {
 		t.scope.RecordTimer(metrics.TaskAttemptTimer, time.Duration(t.attempt))
 		t.scope.RecordTimer(metrics.TaskLatency, time.Since(t.submitTime))
 		t.scope.RecordTimer(metrics.TaskQueueLatency, time.Since(t.GetVisibilityTimestamp()))
+
+		if time.Since(t.GetVisibilityTimestamp()) > 240 * time.Hour {
+			t.logger.Warn("Task lag large than 10 days")
+		}
 	}
 }
 
