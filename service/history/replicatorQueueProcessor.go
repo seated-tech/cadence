@@ -442,6 +442,12 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 	var replicationTasks []*replicator.ReplicationTask
 	readLevel := lastReadTaskID
 	for _, taskInfo := range taskInfoList {
+
+		if taskInfo.GetDomainID() == "9b1388d1-6805-4819-baa5-45b2c34524df" &&
+			p.timeSource.Now().Sub(taskInfo.GetVisibilityTimestamp()) > 6 * time.Hour {
+			readLevel = taskInfo.GetTaskID()
+			continue
+		}
 		var replicationTask *replicator.ReplicationTask
 		op := func() error {
 			var err error
