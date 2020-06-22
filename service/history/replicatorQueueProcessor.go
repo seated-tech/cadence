@@ -468,7 +468,7 @@ func (p *replicatorQueueProcessorImpl) getTasks(
 		time.Duration(p.shard.GetTransferMaxReadLevel()-readLevel),
 	)
 
-	if p.shard.GetTransferMaxReadLevel()-readLevel > 1000000 {
+	if p.shard.GetTransferMaxReadLevel()-readLevel > 500000000 {
 		p.logger.Warn("replication tasks are lagging too much",
 			tag.ShardID(p.shard.GetShardID()),
 			tag.Value(taskInfoList))
