@@ -317,7 +317,7 @@ func (t *taskBase) Ack() {
 		t.scope.RecordTimer(metrics.TaskLatency, time.Since(t.submitTime))
 		t.scope.RecordTimer(metrics.TaskQueueLatency, time.Since(t.GetVisibilityTimestamp()))
 
-		if time.Since(t.GetVisibilityTimestamp()) > 24 * time.Hour {
+		if time.Since(t.GetVisibilityTimestamp()) > 24*time.Hour {
 			t.logger.Info("Task lags too long")
 		}
 	}

@@ -281,14 +281,9 @@ func (p *taskProcessorImpl) processResponse(response *r.ReplicationMessages) {
 	p.lastProcessedMessageID = response.GetLastRetrievedMessageId()
 	p.lastRetrievedMessageID = response.GetLastRetrievedMessageId()
 
-	p.syncShardChan <- response.GetSyncShardStatus()
-	// Note here we check replication tasks instead of hasMore. The expectation is that in a steady state
-	// we will receive replication tasks but hasMore is false (meaning that we are always catching up).
-	// So hasMore might not be a good indicator for additional wait.
-	if len(response.ReplicationTasks) == 0 {
-		backoffDuration := p.noTaskRetrier.NextBackOff()
-		time.Sleep(backoffDuration)
-		return
+	select {
+	case p.syncShardChan <- response.GetSyncShardStatus():
+	default:
 	}
 
 	for _, replicationTask := range response.ReplicationTasks {
@@ -300,7 +295,6 @@ func (p *taskProcessorImpl) processResponse(response *r.ReplicationMessages) {
 	}
 	scope := p.metricsClient.Scope(metrics.ReplicationTaskFetcherScope, metrics.TargetClusterTag(p.sourceCluster))
 	scope.UpdateGauge(metrics.LastRetrievedMessageID, float64(p.lastRetrievedMessageID))
-	p.noTaskRetrier.Reset()
 }
 
 func (p *taskProcessorImpl) syncShardStatusLoop() {
