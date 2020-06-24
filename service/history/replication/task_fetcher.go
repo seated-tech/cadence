@@ -41,7 +41,7 @@ import (
 
 const (
 	fetchTaskRequestTimeout = 60 * time.Second
-	requestChanBufferSize   = 1000
+	requestChanBufferSize   = 2000
 )
 
 type (

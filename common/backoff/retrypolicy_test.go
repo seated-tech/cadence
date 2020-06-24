@@ -78,6 +78,19 @@ func (s *RetryPolicySuite) TestNumberOfAttempts() {
 	s.Equal(done, next)
 }
 
+func (s *RetryPolicySuite) TestNumberOfAttemptsV2() {
+	policy := NewExponentialRetryPolicy(0)
+	policy.SetBackoffCoefficient(1)
+	policy.SetExpirationInterval(NoInterval)
+
+	r, _ := createRetrier(policy)
+	var next time.Duration
+	for i := 0; i < 6; i++ {
+		next = r.NextBackOff()
+		s.Equal(done, next)
+	}
+}
+
 // Test to make sure relative maximum interval for each retry is honoured
 func (s *RetryPolicySuite) TestMaximumInterval() {
 	policy := createPolicy(time.Second)
