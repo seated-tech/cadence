@@ -293,6 +293,9 @@ func (p *taskProcessorImpl) processResponse(response *r.ReplicationMessages) {
 	}
 
 	for _, replicationTask := range response.ReplicationTasks {
+		if p.shard.GetShardID() == 10790 {
+			p.logger.Info("Processing task", tag.TaskID(replicationTask.GetSourceTaskId()))
+		}
 		err := p.processSingleTask(replicationTask)
 		if err != nil {
 			// Processor is shutdown. Exit without updating the checkpoint.
