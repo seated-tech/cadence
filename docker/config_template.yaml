@@ -183,25 +183,23 @@ archival:
     status: "enabled"
     enableRead: true
     provider:
-      filestore:
-        fileMode: "0666"
-        dirMode: "0766"
+        s3store:
+            region: "us-east-1"
   visibility:
     status: "enabled"
     enableRead: true
     provider:
-      filestore:
-        fileMode: "0666"
-        dirMode: "0766"
+        s3store:
+            region: "us-east-1"
 
 domainDefaults:
   archival:
     history:
       status: "enabled"
-      URI: "file:///tmp/cadence_archival/development"
+      URI: {{ .Env.S3_ARCHIVAL_URI }}
     visibility:
       status: "enabled"
-      URI: "file:///tmp/cadence_vis_archival/development"
+      URI: {{ .Env.S3_ARCHIVAL_URI }}
 
 kafka:
     tls:
