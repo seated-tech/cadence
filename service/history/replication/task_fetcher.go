@@ -215,6 +215,9 @@ func (f *taskFetcherImpl) fetchTasks() {
 				close(req.respChan)
 			}
 			requestByShard[request.token.GetShardID()] = request
+			if request.token.GetShardID() == 10790 {
+				f.logger.Info("Put request into replication fetcher")
+			}
 
 		case <-timer.C:
 			// When timer fires, we collect all the requests we have so far and attempt to send them to remote.
@@ -257,6 +260,9 @@ func (f *taskFetcherImpl) fetchAndDistributeTasks(requestByShard map[int32]*requ
 		request.respChan <- tasks
 		close(request.respChan)
 		delete(requestByShard, shardID)
+		if shardID == 10790 {
+			f.logger.Info("Received replication task from source cluster")
+		}
 	}
 
 	return nil

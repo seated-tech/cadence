@@ -163,7 +163,6 @@ func (p *taskProcessorImpl) Stop() {
 }
 
 func (p *taskProcessorImpl) processorLoop() {
-	p.lastProcessedMessageID = p.shard.GetClusterReplicationLevel(p.sourceCluster)
 
 	defer func() {
 		p.logger.Info("Closing replication task processor.", tag.ReadLevel(p.lastRetrievedMessageID))
@@ -174,6 +173,9 @@ Loop:
 		// for each iteration, do close check first
 		select {
 		case <-p.done:
+			if p.shard.GetShardID() == 10790 {
+			 p.logger.Error("Unexpected to stop on shard")
+			}
 			p.logger.Info("ReplicationTaskProcessor shutting down.")
 			return
 		default:
@@ -187,12 +189,14 @@ Loop:
 				p.logger.Debug("Fetch replication messages chan closed.")
 				continue Loop
 			}
+			if p.shard.GetShardID() == 10790 {
+				p.logger.Info("Got fetch replication messages response.",
+					tag.ReadLevel(response.GetLastRetrievedMessageId()),
+					tag.Bool(response.GetHasMore()),
+					tag.Counter(len(response.GetReplicationTasks())),
+				)
+			}
 
-			p.logger.Debug("Got fetch replication messages response.",
-				tag.ReadLevel(response.GetLastRetrievedMessageId()),
-				tag.Bool(response.GetHasMore()),
-				tag.Counter(len(response.GetReplicationTasks())),
-			)
 
 			p.processResponse(response)
 		case <-p.done:
@@ -273,6 +277,9 @@ func (p *taskProcessorImpl) sendFetchMessageRequest() <-chan *r.ReplicationMessa
 		},
 		respChan: respChan,
 	}
+	if p.shard.GetShardID() == 10790 {
+		p.logger.Info("Send get replication messages request to fetcher")
+	}
 	return respChan
 }
 
@@ -292,6 +299,9 @@ func (p *taskProcessorImpl) processResponse(response *r.ReplicationMessages) {
 			// Processor is shutdown. Exit without updating the checkpoint.
 			return
 		}
+	}
+	if p.shard.GetShardID() == 10790 {
+		p.logger.Info("Done processed replication task.")
 	}
 	scope := p.metricsClient.Scope(metrics.ReplicationTaskFetcherScope, metrics.TargetClusterTag(p.sourceCluster))
 	scope.UpdateGauge(metrics.LastRetrievedMessageID, float64(p.lastRetrievedMessageID))
