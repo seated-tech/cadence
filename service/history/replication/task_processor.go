@@ -197,7 +197,6 @@ Loop:
 				)
 			}
 
-
 			p.processResponse(response)
 		case <-p.done:
 			return
