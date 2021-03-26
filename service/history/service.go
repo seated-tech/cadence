@@ -42,7 +42,7 @@ type Service struct {
 	resource.Resource
 
 	status  int32
-	handler *Handler
+	handler *handlerImpl
 	stopC   chan struct{}
 	params  *service.BootstrapParams
 	config  *config.Config
@@ -53,7 +53,11 @@ func NewService(
 	params *service.BootstrapParams,
 ) (resource.Resource, error) {
 	serviceConfig := config.New(
-		dynamicconfig.NewCollection(params.DynamicConfig, params.Logger),
+		dynamicconfig.NewCollection(
+			params.DynamicConfig,
+			params.Logger,
+			dynamicconfig.ClusterNameFilter(params.ClusterMetadata.GetCurrentClusterName()),
+		),
 		params.PersistenceConfig.NumHistoryShards,
 		params.PersistenceConfig.DefaultStoreType(),
 		params.PersistenceConfig.IsAdvancedVisibilityConfigExist())
@@ -119,7 +123,9 @@ func (s *Service) Start() {
 	logger.Info("history starting")
 
 	s.handler = NewHandler(s.Resource, s.config)
-	s.handler.RegisterHandler()
+
+	thriftHandler := NewThriftHandler(s.handler)
+	thriftHandler.register(s.GetDispatcher())
 
 	// must start resource first
 	s.Resource.Start()

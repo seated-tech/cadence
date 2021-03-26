@@ -3,7 +3,7 @@ CREATE TYPE shard (
   owner                             text, -- Host identifier processing the shard
   -- Range identifier used for generating ack ids for tasks within shard.
   -- Also used for optimistic concurrency and all writes to a shard are conditional on this value.
-  range_id                          bigint,
+  range_id                          bigint, -- TO BE DEPRECATED, IN FAVOR OF range_id column in executions table
   -- This field keeps track of number of times owner for a shard changes before updating range_id or ack_levels
   stolen_since_renew                int,
   updated_at                        timestamp,
@@ -11,10 +11,16 @@ CREATE TYPE shard (
   transfer_ack_level                bigint, -- TO BE DEPRECATED, IN FAVOR OF cluster_transfer_ack_level
   timer_ack_level                   timestamp, -- TO BE DEPRECATED, IN FAVOR OF cluster_timer_ack_level
   -- Mapping of cluster to corresponding transfer ack level
-  cluster_transfer_ack_level        map<text, bigint>,
+  cluster_transfer_ack_level        map<text, bigint>, -- TO BE DEPRECATED, IN FAVOR OF transfer_processing_queue_states
   -- Mapping of cluster to corresponding timer ack level
-  cluster_timer_ack_level           map<text, timestamp>,
+  cluster_timer_ack_level           map<text, timestamp>, -- TO BE DEPRECATED, IN FAVOR OF timer_processing_queue_states
   domain_notification_version       bigint, -- the global domain change version this shard is aware of
+  -- Mapping of cluster to corresponding list of transfer queue processing states
+  transfer_processing_queue_states  blob,
+  transfer_processing_queue_states_encoding  text,
+  -- Mapping of cluster to corresponding list of transfer queue processing states
+  timer_processing_queue_states     blob,
+  timer_processing_queue_states_encoding     text,
   -- Mapping of (remote) cluster to corresponding replication level (last replicated task_id)
   cluster_replication_level         map<text, bigint>,
   -- Mapping of (remote) cluster to corresponding replication DLQ ack level (last replicated task_id)
@@ -409,8 +415,9 @@ CREATE TABLE domains_by_name_v2 (
   config_version                bigint, -- indicating the version of domain config, excluding the failover / change of active cluster name
   failover_version              bigint, -- indicating the version of active domain only, used for domain failover
   failover_notification_version bigint, -- indicating the last change related to domain failover
-  previous_failover_version     bigint,
+  previous_failover_version     bigint, -- indicating the previouse failover version for graceful failover
   failover_end_time             bigint, -- indicating domain failover state
+  last_updated_time             bigint, -- indicating the domain last update timestamp
   notification_version          bigint,
   PRIMARY KEY (domains_partition, name)
 )  WITH COMPACTION = {

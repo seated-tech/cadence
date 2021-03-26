@@ -18,11 +18,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//go:generate mockgen -copyright_file ../../LICENSE -package $GOPACKAGE -source $GOFILE -destination domainCache_mock.go -self_package github.com/uber/cadence/common/cache
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination domainCache_mock.go -self_package github.com/uber/cadence/common/cache
 
 package cache
 
 import (
+	"context"
 	"hash/fnv"
 	"sort"
 	"strconv"
@@ -30,7 +31,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	workflow "github.com/uber/cadence/.gen/go/shared"
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/cluster"
@@ -39,6 +39,7 @@ import (
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/persistence"
+	"github.com/uber/cadence/common/types"
 )
 
 // ReplicationPolicy is the domain's replication policy,
@@ -64,6 +65,8 @@ const (
 	// if refreshment encounters error
 	DomainCacheRefreshFailureRetryInterval = 1 * time.Second
 	domainCacheRefreshPageSize             = 200
+
+	domainCachePersistenceTimeout = 3 * time.Second
 
 	domainCacheInitialized int32 = 0
 	domainCacheStarted     int32 = 1
@@ -94,6 +97,8 @@ type (
 		GetDomainName(id string) (string, error)
 		GetAllDomain() map[string]*DomainCacheEntry
 		GetCacheSize() (sizeOfCacheByName int64, sizeOfCacheByID int64)
+
+		GetActiveDomainByID(id string) (*DomainCacheEntry, error)
 	}
 
 	domainCache struct {
@@ -345,7 +350,7 @@ func (c *domainCache) GetDomain(
 ) (*DomainCacheEntry, error) {
 
 	if name == "" {
-		return nil, &workflow.BadRequestError{Message: "Domain is empty."}
+		return nil, &types.BadRequestError{Message: "Domain is empty."}
 	}
 	return c.getDomain(name)
 }
@@ -357,7 +362,7 @@ func (c *domainCache) GetDomainByID(
 ) (*DomainCacheEntry, error) {
 
 	if id == "" {
-		return nil, &workflow.BadRequestError{Message: "DomainID is empty."}
+		return nil, &types.BadRequestError{Message: "DomainID is empty."}
 	}
 	return c.getDomainByID(id, true)
 }
@@ -384,6 +389,25 @@ func (c *domainCache) GetDomainName(
 		return "", err
 	}
 	return entry.info.Name, nil
+}
+
+func (c *domainCache) GetActiveDomainByID(
+	id string,
+) (*DomainCacheEntry, error) {
+	if err := common.ValidateDomainUUID(id); err != nil {
+		return nil, err
+	}
+
+	domainEntry, err := c.GetDomainByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if err = domainEntry.GetDomainNotActiveErr(); err != nil {
+		// TODO: currently reapply events API will check if returned domainEntry is nil or not
+		// when there's an error.
+		return domainEntry, err
+	}
+	return domainEntry, nil
 }
 
 func (c *domainCache) refreshLoop() {
@@ -424,20 +448,23 @@ func (c *domainCache) refreshDomainsLocked() error {
 
 	// first load the metadata record, then load domains
 	// this can guarantee that domains in the cache are not updated more than metadata record
-	metadata, err := c.metadataMgr.GetMetadata()
+	ctx, cancel := context.WithTimeout(context.Background(), domainCachePersistenceTimeout)
+	defer cancel()
+	metadata, err := c.metadataMgr.GetMetadata(ctx)
 	if err != nil {
 		return err
 	}
 	domainNotificationVersion := metadata.NotificationVersion
-
 	var token []byte
 	request := &persistence.ListDomainsRequest{PageSize: domainCacheRefreshPageSize}
 	var domains DomainCacheEntries
 	continuePage := true
 
 	for continuePage {
+		ctx, cancel := context.WithTimeout(context.Background(), domainCachePersistenceTimeout)
 		request.NextPageToken = token
-		response, err := c.metadataMgr.ListDomains(request)
+		response, err := c.metadataMgr.ListDomains(ctx, request)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -478,6 +505,12 @@ UpdateLoop:
 		if err != nil {
 			return err
 		}
+
+		c.metricsClient.Scope(metrics.DomainCacheScope).Tagged(
+			metrics.DomainTag(nextEntry.info.Name),
+			metrics.ActiveClusterTag(nextEntry.replicationConfig.ActiveClusterName),
+		).UpdateGauge(metrics.ActiveClusterGauge, 1)
+
 		c.updateNameToIDCache(newCacheNameToID, nextEntry.info.Name, nextEntry.info.ID)
 
 		if prevEntry != nil {
@@ -505,8 +538,10 @@ func (c *domainCache) checkDomainExists(
 	name string,
 	id string,
 ) error {
+	ctx, cancel := context.WithTimeout(context.Background(), domainCachePersistenceTimeout)
+	defer cancel()
 
-	_, err := c.metadataMgr.GetDomain(&persistence.GetDomainRequest{Name: name, ID: id})
+	_, err := c.metadataMgr.GetDomain(ctx, &persistence.GetDomainRequest{Name: name, ID: id})
 	return err
 }
 
@@ -524,7 +559,6 @@ func (c *domainCache) updateIDToDomainCache(
 	id string,
 	record *DomainCacheEntry,
 ) (*DomainCacheEntry, *DomainCacheEntry, error) {
-
 	elem, err := cacheByID.PutIfNotExist(id, newDomainCacheEntry(c.clusterMetadata))
 	if err != nil {
 		return nil, nil, err
@@ -589,7 +623,7 @@ func (c *domainCache) getDomain(
 		return c.getDomainByID(id, true)
 	}
 	// impossible case
-	return nil, &workflow.InternalServiceError{Message: "domainCache encounter case where domain exists but cannot be loaded"}
+	return nil, &types.InternalServiceError{Message: "domainCache encounter case where domain exists but cannot be loaded"}
 }
 
 // getDomainByID retrieves the information from the cache if it exists, otherwise retrieves the information from metadata
@@ -641,7 +675,7 @@ func (c *domainCache) getDomainByID(
 		return result, nil
 	}
 	// impossible case
-	return nil, &workflow.InternalServiceError{Message: "domainCache encounter case where domain exists but cannot be loaded"}
+	return nil, &types.InternalServiceError{Message: "domainCache encounter case where domain exists but cannot be loaded"}
 }
 
 func (c *domainCache) triggerDomainChangePrepareCallbackLocked() {
@@ -687,12 +721,12 @@ func (c *domainCache) buildEntryFromRecord(
 	return newEntry
 }
 
-func copyResetBinary(bins workflow.BadBinaries) workflow.BadBinaries {
-	newbins := make(map[string]*workflow.BadBinaryInfo, len(bins.Binaries))
+func copyResetBinary(bins types.BadBinaries) types.BadBinaries {
+	newbins := make(map[string]*types.BadBinaryInfo, len(bins.Binaries))
 	for k, v := range bins.Binaries {
 		newbins[k] = v
 	}
-	return workflow.BadBinaries{
+	return types.BadBinaries{
 		Binaries: newbins,
 	}
 }
@@ -803,11 +837,6 @@ func (entry *DomainCacheEntry) IsDomainPendingActive() bool {
 		return false
 	}
 	return entry.failoverEndTime != nil
-}
-
-// GetDomainFailoverEndTime returns domain failover end time if it exists
-func (entry *DomainCacheEntry) GetDomainFailoverEndTime() *int64 {
-	return entry.failoverEndTime
 }
 
 // GetReplicationPolicy return the derived workflow replication policy

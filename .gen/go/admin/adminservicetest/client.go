@@ -1,17 +1,17 @@
 // The MIT License (MIT)
-// 
+
 // Copyright (c) 2017-2020 Uber Technologies Inc.
-// 
+
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all
 // copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -27,12 +27,14 @@ package adminservicetest
 
 import (
 	context "context"
+
 	gomock "github.com/golang/mock/gomock"
+	yarpc "go.uber.org/yarpc"
+
 	admin "github.com/uber/cadence/.gen/go/admin"
 	adminserviceclient "github.com/uber/cadence/.gen/go/admin/adminserviceclient"
 	replicator "github.com/uber/cadence/.gen/go/replicator"
 	shared "github.com/uber/cadence/.gen/go/shared"
-	yarpc "go.uber.org/yarpc"
 )
 
 // MockClient implements a gomock-compatible mock client for service
@@ -192,6 +194,39 @@ func (mr *_MockClientRecorder) DescribeHistoryHost(
 	return mr.mock.ctrl.RecordCall(mr.mock, "DescribeHistoryHost", args...)
 }
 
+// DescribeQueue responds to a DescribeQueue call based on the mock expectations. This
+// call will fail if the mock does not expect this call. Use EXPECT to expect
+// a call to this function.
+//
+// 	client.EXPECT().DescribeQueue(gomock.Any(), ...).Return(...)
+// 	... := client.DescribeQueue(...)
+func (m *MockClient) DescribeQueue(
+	ctx context.Context,
+	_Request *shared.DescribeQueueRequest,
+	opts ...yarpc.CallOption,
+) (success *shared.DescribeQueueResponse, err error) {
+
+	args := []interface{}{ctx, _Request}
+	for _, o := range opts {
+		args = append(args, o)
+	}
+	i := 0
+	ret := m.ctrl.Call(m, "DescribeQueue", args...)
+	success, _ = ret[i].(*shared.DescribeQueueResponse)
+	i++
+	err, _ = ret[i].(error)
+	return
+}
+
+func (mr *_MockClientRecorder) DescribeQueue(
+	ctx interface{},
+	_Request interface{},
+	opts ...interface{},
+) *gomock.Call {
+	args := append([]interface{}{ctx, _Request}, opts...)
+	return mr.mock.ctrl.RecordCall(mr.mock, "DescribeQueue", args...)
+}
+
 // DescribeWorkflowExecution responds to a DescribeWorkflowExecution call based on the mock expectations. This
 // call will fail if the mock does not expect this call. Use EXPECT to expect
 // a call to this function.
@@ -322,39 +357,6 @@ func (mr *_MockClientRecorder) GetReplicationMessages(
 ) *gomock.Call {
 	args := append([]interface{}{ctx, _Request}, opts...)
 	return mr.mock.ctrl.RecordCall(mr.mock, "GetReplicationMessages", args...)
-}
-
-// GetWorkflowExecutionRawHistory responds to a GetWorkflowExecutionRawHistory call based on the mock expectations. This
-// call will fail if the mock does not expect this call. Use EXPECT to expect
-// a call to this function.
-//
-// 	client.EXPECT().GetWorkflowExecutionRawHistory(gomock.Any(), ...).Return(...)
-// 	... := client.GetWorkflowExecutionRawHistory(...)
-func (m *MockClient) GetWorkflowExecutionRawHistory(
-	ctx context.Context,
-	_GetRequest *admin.GetWorkflowExecutionRawHistoryRequest,
-	opts ...yarpc.CallOption,
-) (success *admin.GetWorkflowExecutionRawHistoryResponse, err error) {
-
-	args := []interface{}{ctx, _GetRequest}
-	for _, o := range opts {
-		args = append(args, o)
-	}
-	i := 0
-	ret := m.ctrl.Call(m, "GetWorkflowExecutionRawHistory", args...)
-	success, _ = ret[i].(*admin.GetWorkflowExecutionRawHistoryResponse)
-	i++
-	err, _ = ret[i].(error)
-	return
-}
-
-func (mr *_MockClientRecorder) GetWorkflowExecutionRawHistory(
-	ctx interface{},
-	_GetRequest interface{},
-	opts ...interface{},
-) *gomock.Call {
-	args := append([]interface{}{ctx, _GetRequest}, opts...)
-	return mr.mock.ctrl.RecordCall(mr.mock, "GetWorkflowExecutionRawHistory", args...)
 }
 
 // GetWorkflowExecutionRawHistoryV2 responds to a GetWorkflowExecutionRawHistoryV2 call based on the mock expectations. This
@@ -609,4 +611,35 @@ func (mr *_MockClientRecorder) ResendReplicationTasks(
 ) *gomock.Call {
 	args := append([]interface{}{ctx, _Request}, opts...)
 	return mr.mock.ctrl.RecordCall(mr.mock, "ResendReplicationTasks", args...)
+}
+
+// ResetQueue responds to a ResetQueue call based on the mock expectations. This
+// call will fail if the mock does not expect this call. Use EXPECT to expect
+// a call to this function.
+//
+// 	client.EXPECT().ResetQueue(gomock.Any(), ...).Return(...)
+// 	... := client.ResetQueue(...)
+func (m *MockClient) ResetQueue(
+	ctx context.Context,
+	_Request *shared.ResetQueueRequest,
+	opts ...yarpc.CallOption,
+) (err error) {
+
+	args := []interface{}{ctx, _Request}
+	for _, o := range opts {
+		args = append(args, o)
+	}
+	i := 0
+	ret := m.ctrl.Call(m, "ResetQueue", args...)
+	err, _ = ret[i].(error)
+	return
+}
+
+func (mr *_MockClientRecorder) ResetQueue(
+	ctx interface{},
+	_Request interface{},
+	opts ...interface{},
+) *gomock.Call {
+	args := append([]interface{}{ctx, _Request}, opts...)
+	return mr.mock.ctrl.RecordCall(mr.mock, "ResetQueue", args...)
 }

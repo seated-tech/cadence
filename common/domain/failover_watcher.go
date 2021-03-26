@@ -18,11 +18,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//go:generate mockgen -copyright_file ../../LICENSE -package $GOPACKAGE -source $GOFILE -destination failover_watcher_mock.go
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination failover_watcher_mock.go
 
 package domain
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -151,8 +152,8 @@ func (p *failoverWatcherImpl) handleFailoverTimeout(
 	domain *cache.DomainCacheEntry,
 ) {
 
-	failoverEndTime := domain.GetDomainFailoverEndTime()
-	if failoverEndTime != nil && p.timeSource.Now().After(time.Unix(0, *failoverEndTime)) {
+	failoverEndTime := domain.GetFailoverEndTime()
+	if domain.IsDomainPendingActive() && p.timeSource.Now().After(time.Unix(0, *failoverEndTime)) {
 		domainID := domain.GetInfo().ID
 		// force failover the domain without setting the failover timeout
 		if err := CleanPendingActiveState(
@@ -179,12 +180,13 @@ func CleanPendingActiveState(
 	// this version can be regarded as the lock on the v2 domain table
 	// and since we do not know which table will return the domain afterwards
 	// this call has to be made
-	metadata, err := metadataMgr.GetMetadata()
+	metadata, err := metadataMgr.GetMetadata(context.Background())
 	if err != nil {
 		return err
 	}
 	notificationVersion := metadata.NotificationVersion
-	getResponse, err := metadataMgr.GetDomain(&persistence.GetDomainRequest{ID: domainID})
+
+	getResponse, err := metadataMgr.GetDomain(context.Background(), &persistence.GetDomainRequest{ID: domainID})
 	if err != nil {
 		return err
 	}
@@ -205,7 +207,7 @@ func CleanPendingActiveState(
 			NotificationVersion:         notificationVersion,
 		}
 		op := func() error {
-			return metadataMgr.UpdateDomain(updateReq)
+			return metadataMgr.UpdateDomain(context.Background(), updateReq)
 		}
 		if err := backoff.Retry(
 			op,

@@ -22,6 +22,8 @@ package common
 
 import (
 	"time"
+
+	"github.com/uber/cadence/.gen/go/shadower"
 )
 
 const (
@@ -74,6 +76,7 @@ const (
 	EncodingTypeGob      EncodingType = "gob"
 	EncodingTypeUnknown  EncodingType = "unknow"
 	EncodingTypeEmpty    EncodingType = ""
+	EncodingTypeProto    EncodingType = "proto3"
 )
 
 type (
@@ -102,14 +105,23 @@ const (
 const (
 	// SystemGlobalDomainName is global domain name for cadence system workflows running globally
 	SystemGlobalDomainName = "cadence-system-global"
-	// SystemLocalDomainName is domain name for cadence system workflows running in local cluster
-	SystemLocalDomainName = "cadence-system"
 	// SystemDomainID is domain id for all cadence system workflows
 	SystemDomainID = "32049b68-7872-4094-8e63-d0dd59896a83"
+	// SystemLocalDomainName is domain name for cadence system workflows running in local cluster
+	SystemLocalDomainName = "cadence-system"
 	// SystemDomainRetentionDays is retention config for all cadence system workflows
 	SystemDomainRetentionDays = 7
 	// DefaultAdminOperationToken is the default dynamic config value for AdminOperationToken
 	DefaultAdminOperationToken = "CadenceTeamONLY"
+	// BatcherDomainID is domain id for batcher local domain
+	BatcherDomainID = "3116607e-419b-4783-85fc-47726a4c3fe9"
+	// BatcherLocalDomainName is domain name for batcher workflows running in local cluster
+	// Batcher cannot use SystemLocalDomain because auth
+	BatcherLocalDomainName = "cadence-batcher"
+	// ShadowerDomainID is domain id for workflow shadower local domain
+	ShadowerDomainID = "59c51119-1b41-4a28-986d-d6e377716f82"
+	// ShadowerLocalDomainName
+	ShadowerLocalDomainName = shadower.LocalDomainName
 )
 
 const (
@@ -119,10 +131,6 @@ const (
 	// CriticalLongPollTimeout is a threshold for the context timeout passed into long poll API,
 	// below which a warning will be logged
 	CriticalLongPollTimeout = time.Second * 20
-	// MaxWorkflowRetentionPeriodInDays is the maximum of workflow retention when registering domain
-	// !!! Do NOT simply decrease this number, because it is being used by history scavenger to avoid race condition against history archival.
-	// Check more details in history scanner(scavenger)
-	MaxWorkflowRetentionPeriodInDays = 30
 )
 
 const (
@@ -165,3 +173,12 @@ const (
 	// TaskTypeReplication is the task type for replication task
 	TaskTypeReplication
 )
+
+// StickyTaskConditionFailedErrorMsg error msg for sticky task ConditionFailedError
+const StickyTaskConditionFailedErrorMsg = "StickyTaskConditionFailedError"
+
+// MemoKeyForOperator is the memo key for operator
+const MemoKeyForOperator = "operator"
+
+// ReservedTaskListPrefix is the required naming prefix for any task list partition other than partition 0
+const ReservedTaskListPrefix = "/__cadence_sys/"

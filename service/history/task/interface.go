@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//go:generate mockgen -copyright_file ../../../LICENSE -package $GOPACKAGE -source $GOFILE -destination interface_mock.go -self_package github.com/uber/cadence/service/history/task
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination interface_mock.go -self_package github.com/uber/cadence/service/history/task
 
 package task
 
@@ -78,6 +78,15 @@ type (
 		StopShardProcessor(shard.Context)
 		Submit(Task) error
 		TrySubmit(Task) (bool, error)
+	}
+
+	// Redispatcher buffers tasks and periodically redispatch them to Processor
+	// redispatch can also be triggered immediately by calling the Redispatch method
+	Redispatcher interface {
+		common.Daemon
+		AddTask(Task)
+		Redispatch(targetSize int)
+		Size() int
 	}
 
 	// QueueType is the type of task queue

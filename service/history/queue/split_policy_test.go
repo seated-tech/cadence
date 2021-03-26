@@ -27,8 +27,13 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"github.com/uber-go/tally"
 
+	"github.com/uber/cadence/common/log"
+	"github.com/uber/cadence/common/log/loggerimpl"
+	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/service/dynamicconfig"
+	t "github.com/uber/cadence/common/task"
 	"github.com/uber/cadence/service/history/task"
 )
 
@@ -38,6 +43,9 @@ type (
 		*require.Assertions
 
 		controller *gomock.Controller
+
+		logger       log.Logger
+		metricsScope metrics.Scope
 	}
 )
 
@@ -50,6 +58,9 @@ func (s *splitPolicySuite) SetupTest() {
 	s.Assertions = require.New(s.T())
 
 	s.controller = gomock.NewController(s.T())
+
+	s.logger = loggerimpl.NewLoggerForTest(s.Suite)
+	s.metricsScope = metrics.NewClient(tally.NoopScope, metrics.History).Scope(metrics.TimerQueueProcessorScope)
 }
 
 func (s *splitPolicySuite) TearDownTest() {
@@ -71,8 +82,11 @@ func (s *splitPolicySuite) TestPendingTaskSplitPolicy() {
 	}
 	pendingTaskSplitPolicy := NewPendingTaskSplitPolicy(
 		pendingTaskThreshold,
+		dynamicconfig.GetBoolPropertyFnFilteredByDomain(true),
 		lookAheadFunc,
 		maxNewQueueLevel,
+		s.logger,
+		s.metricsScope,
 	)
 
 	testCases := []struct {
@@ -250,6 +264,7 @@ func (s *splitPolicySuite) TestPendingTaskSplitPolicy() {
 			for i := 0; i != numPendingTasks; i++ {
 				mockTask := task.NewMockTask(s.controller)
 				mockTask.EXPECT().GetDomainID().Return(domainID).MaxTimes(1)
+				mockTask.EXPECT().State().Return(t.TaskStatePending).MaxTimes(1)
 				outstandingTasks[task.NewMockKey(s.controller)] = mockTask
 			}
 		}
@@ -276,7 +291,10 @@ func (s *splitPolicySuite) TestStuckTaskSplitPolicy() {
 
 	stuckTaskSplitPolicy := NewStuckTaskSplitPolicy(
 		attemptThreshold,
+		dynamicconfig.GetBoolPropertyFnFilteredByDomain(true),
 		maxNewQueueLevel,
+		s.logger,
+		s.metricsScope,
 	)
 
 	testCases := []struct {
@@ -531,7 +549,7 @@ func (s *splitPolicySuite) TestSelectedDomainSplitPolicy() {
 
 	for _, tc := range testCases {
 		queue := NewProcessingQueue(tc.currentState, nil, nil)
-		splitPolicy := NewSelectedDomainSplitPolicy(tc.domainToSplit, newQueueLevel)
+		splitPolicy := NewSelectedDomainSplitPolicy(tc.domainToSplit, newQueueLevel, s.logger, s.metricsScope)
 
 		s.assertQueueStatesEqual(tc.expectedNewStates, splitPolicy.Evaluate(queue))
 	}
@@ -634,6 +652,8 @@ func (s *splitPolicySuite) TestRandomSplitPolicy() {
 			dynamicconfig.GetBoolPropertyFnFilteredByDomain(true),
 			maxNewQueueLevel,
 			lookAheadFunc,
+			s.logger,
+			s.metricsScope,
 		)
 
 		s.assertQueueStatesEqual(tc.expectedNewStates, splitPolicy.Evaluate(queue))

@@ -21,192 +21,209 @@
 package queue
 
 import (
-	"errors"
-	"math/rand"
 	"testing"
+	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"github.com/uber-go/tally"
 
-	"github.com/uber/cadence/common/collection"
-	"github.com/uber/cadence/common/log"
-	"github.com/uber/cadence/common/log/loggerimpl"
-	"github.com/uber/cadence/common/metrics"
-	"github.com/uber/cadence/service/history/task"
+	"github.com/uber/cadence/common"
+	"github.com/uber/cadence/common/types"
 )
 
 type (
 	queueProcessorUtilSuite struct {
 		suite.Suite
 		*require.Assertions
-
-		controller        *gomock.Controller
-		mockTaskProcessor *task.MockProcessor
-
-		logger        log.Logger
-		metricsClient metrics.Client
-		metricsScope  metrics.Scope
 	}
 )
 
 func TestQueueProcessorUtilSuite(t *testing.T) {
 	s := new(queueProcessorUtilSuite)
 	suite.Run(t, s)
-
 }
 
 func (s *queueProcessorUtilSuite) SetupTest() {
 	s.Assertions = require.New(s.T())
-
-	s.controller = gomock.NewController(s.T())
-	s.mockTaskProcessor = task.NewMockProcessor(s.controller)
-
-	s.logger = loggerimpl.NewDevelopmentForTest(s.Suite)
-	s.metricsClient = metrics.NewClient(tally.NoopScope, metrics.History)
-	s.metricsScope = s.metricsClient.Scope(metrics.TransferQueueProcessorScope)
 }
 
-func (s *queueProcessorUtilSuite) TearDownTest() {
-	s.controller.Finish()
+func (s *queueProcessorUtilSuite) TestConvertToPersistenceTransferProcessingQueueStates() {
+	levels := []int{0, 1}
+	ackLevels := []int64{123, 456}
+	maxLevels := []int64{456, 789}
+	domainFilters := []DomainFilter{
+		NewDomainFilter(nil, true),
+		NewDomainFilter(map[string]struct{}{"domain 1": {}, "domain 2": {}}, false),
+	}
+	states := []ProcessingQueueState{}
+	for i := 0; i != len(levels); i++ {
+		states = append(states, NewProcessingQueueState(
+			levels[i],
+			newTransferTaskKey(ackLevels[i]),
+			newTransferTaskKey(maxLevels[i]),
+			domainFilters[i],
+		))
+	}
+
+	pStates := convertToPersistenceTransferProcessingQueueStates(states)
+	s.Equal(len(states), len(pStates))
+	for i := 0; i != len(states); i++ {
+		s.assertProcessingQueueStateEqual(states[i], pStates[i])
+	}
 }
 
-func (s *queueProcessorUtilSuite) TestRedispatchTask_ProcessorShutDown() {
-	redispatchQueue := collection.NewConcurrentQueue()
-
-	numTasks := 5
-	for i := 0; i != numTasks; i++ {
-		mockTask := task.NewMockTask(s.controller)
-		redispatchQueue.Add(mockTask)
+func (s *queueProcessorUtilSuite) TestConvertFromPersistenceTransferProcessingQueueStates() {
+	levels := []int32{0, 1}
+	ackLevels := []int64{123, 456}
+	maxLevels := []int64{456, 789}
+	domainFilters := []*types.DomainFilter{
+		{
+			DomainIDs:    nil,
+			ReverseMatch: true,
+		},
+		{
+			DomainIDs:    []string{"domain 1", "domain 2"},
+			ReverseMatch: false,
+		},
+	}
+	pStates := []*types.ProcessingQueueState{}
+	for i := 0; i != len(levels); i++ {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        common.Int32Ptr(levels[i]),
+			AckLevel:     common.Int64Ptr(ackLevels[i]),
+			MaxLevel:     common.Int64Ptr(maxLevels[i]),
+			DomainFilter: domainFilters[i],
+		})
 	}
 
-	shutDownCh := make(chan struct{})
-
-	successfullyRedispatched := 3
-	var calls []*gomock.Call
-	for i := 0; i != successfullyRedispatched-1; i++ {
-		calls = append(calls, s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil))
+	states := convertFromPersistenceTransferProcessingQueueStates(pStates)
+	s.Equal(len(pStates), len(states))
+	for i := 0; i != len(pStates); i++ {
+		s.assertProcessingQueueStateEqual(states[i], pStates[i])
 	}
-	calls = append(calls, s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).DoAndReturn(func(_ interface{}) (bool, error) {
-		close(shutDownCh)
-		return true, nil
-	}))
-	calls = append(calls, s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(false, errors.New("processor shutdown")))
-	gomock.InOrder(calls...)
-
-	RedispatchTasks(
-		redispatchQueue,
-		s.mockTaskProcessor,
-		s.logger,
-		s.metricsScope,
-		shutDownCh,
-	)
-
-	s.Equal(numTasks-successfullyRedispatched-1, redispatchQueue.Len())
 }
 
-func (s *queueProcessorUtilSuite) TestRedispatchTask_Random() {
-	redispatchQueue := collection.NewConcurrentQueue()
-
-	numTasks := 10
-	dispatched := 0
-	var calls []*gomock.Call
-
-	for i := 0; i != numTasks; i++ {
-		mockTask := task.NewMockTask(s.controller)
-		redispatchQueue.Add(mockTask)
-		submitted := false
-		if rand.Intn(2) == 0 {
-			submitted = true
-			dispatched++
-		}
-		calls = append(calls, s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(submitted, nil))
+func (s *queueProcessorUtilSuite) TestConvertToPersistenceTimerProcessingQueueStates() {
+	levels := []int{0, 1}
+	ackLevels := []time.Time{time.Now(), time.Now().Add(-time.Minute)}
+	maxLevels := []time.Time{time.Now().Add(time.Hour), time.Now().Add(time.Nanosecond)}
+	domainFilters := []DomainFilter{
+		NewDomainFilter(nil, true),
+		NewDomainFilter(map[string]struct{}{"domain 1": {}, "domain 2": {}}, false),
+	}
+	states := []ProcessingQueueState{}
+	for i := 0; i != len(levels); i++ {
+		states = append(states, NewProcessingQueueState(
+			levels[i],
+			newTimerTaskKey(ackLevels[i], 0),
+			newTimerTaskKey(maxLevels[i], 0),
+			domainFilters[i],
+		))
 	}
 
-	shutDownCh := make(chan struct{})
-	RedispatchTasks(
-		redispatchQueue,
-		s.mockTaskProcessor,
-		s.logger,
-		s.metricsScope,
-		shutDownCh,
-	)
-
-	s.Equal(numTasks-dispatched, redispatchQueue.Len())
+	pStates := convertToPersistenceTimerProcessingQueueStates(states)
+	s.Equal(len(states), len(pStates))
+	for i := 0; i != len(states); i++ {
+		s.assertProcessingQueueStateEqual(states[i], pStates[i])
+	}
 }
 
-func (s *queueProcessorUtilSuite) TestSplitQueue() {
-	mockQueueSplitPolicy := NewMockProcessingQueueSplitPolicy(s.controller)
-
-	processingQueueStates := []ProcessingQueueState{
-		NewProcessingQueueState(
-			0,
-			newTransferTaskKey(0),
-			newTransferTaskKey(100),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, true),
-		),
-		NewProcessingQueueState(
-			1,
-			newTransferTaskKey(0),
-			newTransferTaskKey(100),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, false),
-		),
-		NewProcessingQueueState(
-			0,
-			newTransferTaskKey(100),
-			newTransferTaskKey(1000),
-			NewDomainFilter(map[string]struct{}{}, true),
-		),
+func (s *queueProcessorUtilSuite) TestConvertFromPersistenceTimerProcessingQueueStates() {
+	levels := []int32{0, 1}
+	ackLevels := []time.Time{time.Now(), time.Now().Add(-time.Minute)}
+	maxLevels := []time.Time{time.Now().Add(time.Hour), time.Now().Add(time.Nanosecond)}
+	domainFilters := []*types.DomainFilter{
+		{
+			DomainIDs:    nil,
+			ReverseMatch: true,
+		},
+		{
+			DomainIDs:    []string{"domain 1", "domain 2"},
+			ReverseMatch: false,
+		},
 	}
-	mockQueueSplitPolicy.EXPECT().Evaluate(NewProcessingQueue(processingQueueStates[0], s.logger, s.metricsClient)).Return(nil).Times(1)
-	mockQueueSplitPolicy.EXPECT().Evaluate(NewProcessingQueue(processingQueueStates[1], s.logger, s.metricsClient)).Return([]ProcessingQueueState{
-		NewProcessingQueueState(
-			2,
-			newTransferTaskKey(0),
-			newTransferTaskKey(100),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, false),
-		),
-	}).Times(1)
-	mockQueueSplitPolicy.EXPECT().Evaluate(NewProcessingQueue(processingQueueStates[2], s.logger, s.metricsClient)).Return([]ProcessingQueueState{
-		NewProcessingQueueState(
-			0,
-			newTransferTaskKey(100),
-			newTransferTaskKey(1000),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}, "testDomain2": {}, "testDomain3": {}}, false),
-		),
-		NewProcessingQueueState(
-			1,
-			newTransferTaskKey(100),
-			newTransferTaskKey(1000),
-			NewDomainFilter(map[string]struct{}{"testDomain2": {}}, false),
-		),
-		NewProcessingQueueState(
-			2,
-			newTransferTaskKey(100),
-			newTransferTaskKey(1000),
-			NewDomainFilter(map[string]struct{}{"testDomain3": {}}, false),
-		),
-	}).Times(1)
+	pStates := []*types.ProcessingQueueState{}
+	for i := 0; i != len(levels); i++ {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        common.Int32Ptr(levels[i]),
+			AckLevel:     common.Int64Ptr(ackLevels[i].UnixNano()),
+			MaxLevel:     common.Int64Ptr(maxLevels[i].UnixNano()),
+			DomainFilter: domainFilters[i],
+		})
+	}
 
-	processingQueueCollections := newProcessingQueueCollections(
-		processingQueueStates,
-		s.logger,
-		s.metricsClient,
-	)
+	states := convertFromPersistenceTimerProcessingQueueStates(pStates)
+	s.Equal(len(pStates), len(states))
+	for i := 0; i != len(pStates); i++ {
+		s.assertProcessingQueueStateEqual(states[i], pStates[i])
+	}
+}
 
-	processingQueueCollections = splitProcessingQueueCollection(
-		processingQueueCollections,
-		mockQueueSplitPolicy,
-	)
-	s.Len(processingQueueCollections, 3)
-	s.Len(processingQueueCollections[0].Queues(), 2)
-	s.Len(processingQueueCollections[1].Queues(), 1)
-	s.Len(processingQueueCollections[2].Queues(), 2)
-	for idx := 1; idx != len(processingQueueCollections)-1; idx++ {
-		s.Less(
-			processingQueueCollections[idx-1].Level(),
-			processingQueueCollections[idx].Level(),
-		)
+func (s *queueProcessorUtilSuite) assertProcessingQueueStateEqual(
+	state ProcessingQueueState,
+	pState *types.ProcessingQueueState,
+) {
+	var ackLevel, maxLevel int64
+	switch taskKey := state.AckLevel().(type) {
+	case transferTaskKey:
+		ackLevel = taskKey.taskID
+	case timerTaskKey:
+		ackLevel = taskKey.visibilityTimestamp.UnixNano()
+		s.Zero(taskKey.taskID)
+	}
+	switch taskKey := state.MaxLevel().(type) {
+	case transferTaskKey:
+		maxLevel = taskKey.taskID
+	case timerTaskKey:
+		maxLevel = taskKey.visibilityTimestamp.UnixNano()
+		s.Zero(taskKey.taskID)
+	}
+	s.Equal(state.Level(), int(pState.GetLevel()))
+	s.Equal(ackLevel, pState.GetAckLevel())
+	s.Equal(maxLevel, pState.GetMaxLevel())
+	s.assertDomainFilterEqual(state.DomainFilter(), pState.GetDomainFilter())
+}
+
+func (s *queueProcessorUtilSuite) TestValidateProcessingQueueStates_Fail() {
+	ackLevels := []int64{123, 456}
+	pStates := []*types.ProcessingQueueState{}
+	for i := 0; i != len(ackLevels); i++ {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        nil,
+			AckLevel:     common.Int64Ptr(ackLevels[i]),
+			MaxLevel:     nil,
+			DomainFilter: nil,
+		})
+	}
+
+	isValid := validateProcessingQueueStates(pStates, 789)
+	s.False(isValid)
+}
+
+func (s *queueProcessorUtilSuite) TestValidateProcessingQueueStates_Success() {
+	ackLevels := []time.Time{time.Now(), time.Now().Add(-time.Minute)}
+	pStates := []*types.ProcessingQueueState{}
+	for i := 0; i != len(ackLevels); i++ {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        nil,
+			AckLevel:     common.Int64Ptr(ackLevels[i].UnixNano()),
+			MaxLevel:     nil,
+			DomainFilter: nil,
+		})
+	}
+
+	isValid := validateProcessingQueueStates(pStates, ackLevels[1])
+	s.True(isValid)
+}
+
+func (s *queueProcessorUtilSuite) assertDomainFilterEqual(
+	domainFilter DomainFilter,
+	pDomainFilter *types.DomainFilter,
+) {
+	s.Equal(domainFilter.ReverseMatch, pDomainFilter.GetReverseMatch())
+	s.Equal(len(domainFilter.DomainIDs), len(pDomainFilter.GetDomainIDs()))
+	for _, domainID := range pDomainFilter.GetDomainIDs() {
+		_, ok := domainFilter.DomainIDs[domainID]
+		s.True(ok)
 	}
 }
