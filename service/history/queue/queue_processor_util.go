@@ -21,188 +21,120 @@
 package queue
 
 import (
-	"sort"
 	"time"
 
 	"github.com/uber/cadence/common"
-	"github.com/uber/cadence/common/collection"
-	"github.com/uber/cadence/common/log"
-	"github.com/uber/cadence/common/log/tag"
-	"github.com/uber/cadence/common/metrics"
-	"github.com/uber/cadence/common/service/dynamicconfig"
-	"github.com/uber/cadence/service/history/task"
+	"github.com/uber/cadence/common/types"
 )
 
-type (
-	updateMaxReadLevelFn    func() task.Key
-	updateClusterAckLevelFn func(task.Key) error
-	queueShutdownFn         func() error
-
-	queueProcessorOptions struct {
-		BatchSize                           dynamicconfig.IntPropertyFn
-		MaxPollRPS                          dynamicconfig.IntPropertyFn
-		MaxPollInterval                     dynamicconfig.DurationPropertyFn
-		MaxPollIntervalJitterCoefficient    dynamicconfig.FloatPropertyFn
-		UpdateAckInterval                   dynamicconfig.DurationPropertyFn
-		UpdateAckIntervalJitterCoefficient  dynamicconfig.FloatPropertyFn
-		RedispatchInterval                  dynamicconfig.DurationPropertyFn
-		RedispatchIntervalJitterCoefficient dynamicconfig.FloatPropertyFn
-		MaxRedispatchQueueSize              dynamicconfig.IntPropertyFn
-		SplitQueueInterval                  dynamicconfig.DurationPropertyFn
-		SplitQueueIntervalJitterCoefficient dynamicconfig.FloatPropertyFn
-		EnableSplit                         dynamicconfig.BoolPropertyFn
-		SplitMaxLevel                       dynamicconfig.IntPropertyFn
-		EnableRandomSplitByDomainID         dynamicconfig.BoolPropertyFnWithDomainIDFilter
-		RandomSplitProbability              dynamicconfig.FloatPropertyFn
-		EnablePendingTaskSplit              dynamicconfig.BoolPropertyFn
-		PendingTaskSplitThreshold           dynamicconfig.MapPropertyFn
-		EnableStuckTaskSplit                dynamicconfig.BoolPropertyFn
-		StuckTaskSplitThreshold             dynamicconfig.MapPropertyFn
-		SplitLookAheadDurationByDomainID    dynamicconfig.DurationPropertyFnWithDomainIDFilter
-		MetricScope                         int
+func convertToPersistenceTransferProcessingQueueStates(
+	states []ProcessingQueueState,
+) []*types.ProcessingQueueState {
+	pStates := make([]*types.ProcessingQueueState, 0, len(states))
+	for _, state := range states {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        common.Int32Ptr(int32(state.Level())),
+			AckLevel:     common.Int64Ptr(state.AckLevel().(transferTaskKey).taskID),
+			MaxLevel:     common.Int64Ptr(state.MaxLevel().(transferTaskKey).taskID),
+			DomainFilter: convertToPersistenceDomainFilter(state.DomainFilter()),
+		})
 	}
-)
 
-func newProcessingQueueCollections(
-	processingQueueStates []ProcessingQueueState,
-	logger log.Logger,
-	metricsClient metrics.Client,
-) []ProcessingQueueCollection {
-	processingQueuesMap := make(map[int][]ProcessingQueue) // level -> state
-	for _, queueState := range processingQueueStates {
-		processingQueuesMap[queueState.Level()] = append(processingQueuesMap[queueState.Level()], NewProcessingQueue(
-			queueState,
-			logger,
-			metricsClient,
-		))
-	}
-	processingQueueCollections := make([]ProcessingQueueCollection, 0, len(processingQueuesMap))
-	for level, queues := range processingQueuesMap {
-		processingQueueCollections = append(processingQueueCollections, NewProcessingQueueCollection(
-			level,
-			queues,
-		))
-	}
-	sort.Slice(processingQueueCollections, func(i, j int) bool {
-		return processingQueueCollections[i].Level() < processingQueueCollections[j].Level()
-	})
-
-	return processingQueueCollections
+	return pStates
 }
 
-// RedispatchTasks should be un-exported after the queue processing logic
-// in history package is deprecated.
-func RedispatchTasks(
-	redispatchQueue collection.Queue,
-	taskProcessor task.Processor,
-	logger log.Logger,
-	metricsScope metrics.Scope,
-	shutdownCh <-chan struct{},
-) {
-	queueLength := redispatchQueue.Len()
-	metricsScope.RecordTimer(metrics.TaskRedispatchQueuePendingTasksTimer, time.Duration(queueLength))
-	for i := 0; i != queueLength; i++ {
-		queueTask := redispatchQueue.Remove().(task.Task)
-		submitted, err := taskProcessor.TrySubmit(queueTask)
-		if err != nil {
-			select {
-			case <-shutdownCh:
-				// if error is due to shard shutdown
-				return
-			default:
-				// otherwise it might be error from domain cache etc, add
-				// the task to redispatch queue so that it can be retried
-				logger.Error("failed to redispatch task", tag.Error(err))
-			}
-		}
+func convertFromPersistenceTransferProcessingQueueStates(
+	pStates []*types.ProcessingQueueState,
+) []ProcessingQueueState {
+	states := make([]ProcessingQueueState, 0, len(pStates))
+	for _, pState := range pStates {
+		states = append(states, NewProcessingQueueState(
+			int(pState.GetLevel()),
+			newTransferTaskKey(pState.GetAckLevel()),
+			newTransferTaskKey(pState.GetMaxLevel()),
+			convertFromPersistenceDomainFilter(pState.DomainFilter),
+		))
+	}
 
-		if err != nil || !submitted {
-			// failed to submit, enqueue again
-			redispatchQueue.Add(queueTask)
-		}
+	return states
+}
+
+func convertToPersistenceTimerProcessingQueueStates(
+	states []ProcessingQueueState,
+) []*types.ProcessingQueueState {
+	pStates := make([]*types.ProcessingQueueState, 0, len(states))
+	for _, state := range states {
+		pStates = append(pStates, &types.ProcessingQueueState{
+			Level:        common.Int32Ptr(int32(state.Level())),
+			AckLevel:     common.Int64Ptr(state.AckLevel().(timerTaskKey).visibilityTimestamp.UnixNano()),
+			MaxLevel:     common.Int64Ptr(state.MaxLevel().(timerTaskKey).visibilityTimestamp.UnixNano()),
+			DomainFilter: convertToPersistenceDomainFilter(state.DomainFilter()),
+		})
+	}
+
+	return pStates
+}
+
+func convertFromPersistenceTimerProcessingQueueStates(
+	pStates []*types.ProcessingQueueState,
+) []ProcessingQueueState {
+	states := make([]ProcessingQueueState, 0, len(pStates))
+	for _, pState := range pStates {
+		states = append(states, NewProcessingQueueState(
+			int(pState.GetLevel()),
+			newTimerTaskKey(time.Unix(0, pState.GetAckLevel()), 0),
+			newTimerTaskKey(time.Unix(0, pState.GetMaxLevel()), 0),
+			convertFromPersistenceDomainFilter(pState.DomainFilter),
+		))
+	}
+
+	return states
+}
+
+func convertToPersistenceDomainFilter(
+	domainFilter DomainFilter,
+) *types.DomainFilter {
+	domainIDs := make([]string, 0, len(domainFilter.DomainIDs))
+	for domainID := range domainFilter.DomainIDs {
+		domainIDs = append(domainIDs, domainID)
+	}
+
+	return &types.DomainFilter{
+		DomainIDs:    domainIDs,
+		ReverseMatch: domainFilter.ReverseMatch,
 	}
 }
 
-func initializeSplitPolicy(
-	options *queueProcessorOptions,
-	lookAheadFunc lookAheadFunc,
-	logger log.Logger,
-) ProcessingQueueSplitPolicy {
-	if !options.EnableSplit() {
-		return nil
+func convertFromPersistenceDomainFilter(
+	domainFilter *types.DomainFilter,
+) DomainFilter {
+	domainIDs := make(map[string]struct{})
+	for _, domainID := range domainFilter.DomainIDs {
+		domainIDs[domainID] = struct{}{}
 	}
 
-	// note the order of policies matters, check the comment for aggregated split policy
-	var policies []ProcessingQueueSplitPolicy
-	maxNewQueueLevel := options.SplitMaxLevel()
-
-	if options.EnablePendingTaskSplit() {
-		thresholds, err := common.ConvertDynamicConfigMapPropertyToIntMap(options.PendingTaskSplitThreshold())
-		if err != nil {
-			logger.Error("Failed to convert pending task threshold", tag.Error(err))
-		} else {
-			policies = append(policies, NewPendingTaskSplitPolicy(thresholds, lookAheadFunc, maxNewQueueLevel))
-		}
-	}
-
-	if options.EnableStuckTaskSplit() {
-		thresholds, err := common.ConvertDynamicConfigMapPropertyToIntMap(options.StuckTaskSplitThreshold())
-		if err != nil {
-			logger.Error("Failed to convert stuck task threshold", tag.Error(err))
-		} else {
-			policies = append(policies, NewStuckTaskSplitPolicy(thresholds, maxNewQueueLevel))
-		}
-	}
-
-	randomSplitProbability := options.RandomSplitProbability()
-	if randomSplitProbability != float64(0) {
-		policies = append(policies, NewRandomSplitPolicy(
-			randomSplitProbability,
-			options.EnableRandomSplitByDomainID,
-			maxNewQueueLevel,
-			lookAheadFunc,
-		))
-	}
-
-	if len(policies) == 0 {
-		return nil
-	}
-
-	return NewAggregatedSplitPolicy(policies...)
+	return NewDomainFilter(domainIDs, domainFilter.GetReverseMatch())
 }
 
-func splitProcessingQueueCollection(
-	processingQueueCollections []ProcessingQueueCollection,
-	splitPolicy ProcessingQueueSplitPolicy,
-) []ProcessingQueueCollection {
-	if splitPolicy == nil {
-		return processingQueueCollections
+func validateProcessingQueueStates(
+	pStates []*types.ProcessingQueueState,
+	ackLevel interface{},
+) bool {
+	if len(pStates) == 0 {
+		return false
 	}
 
-	newQueuesMap := make(map[int][]ProcessingQueue)
-	for _, queueCollection := range processingQueueCollections {
-		newQueues := queueCollection.Split(splitPolicy)
-		for _, newQueue := range newQueues {
-			newQueueLevel := newQueue.State().Level()
-			newQueuesMap[newQueueLevel] = append(newQueuesMap[newQueueLevel], newQueue)
-		}
-
-		if queuesToMerge, ok := newQueuesMap[queueCollection.Level()]; ok {
-			queueCollection.Merge(queuesToMerge)
-			delete(newQueuesMap, queueCollection.Level())
-		}
+	minAckLevel := pStates[0].GetAckLevel()
+	for _, pState := range pStates {
+		minAckLevel = common.MinInt64(minAckLevel, pState.GetAckLevel())
 	}
 
-	for level, newQueues := range newQueuesMap {
-		processingQueueCollections = append(processingQueueCollections, NewProcessingQueueCollection(
-			level,
-			newQueues,
-		))
+	switch ackLevel := ackLevel.(type) {
+	case int64:
+		return minAckLevel == ackLevel
+	case time.Time:
+		return minAckLevel == ackLevel.UnixNano()
+	default:
+		return false
 	}
-
-	sort.Slice(processingQueueCollections, func(i, j int) bool {
-		return processingQueueCollections[i].Level() < processingQueueCollections[j].Level()
-	})
-
-	return processingQueueCollections
 }

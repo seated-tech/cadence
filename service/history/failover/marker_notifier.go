@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-//go:generate mockgen -copyright_file ../../../LICENSE -package $GOPACKAGE -source $GOFILE -destination marker_notifier_mock.go -self_package github.com/uber/cadence/service/history/failover
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination marker_notifier_mock.go -self_package github.com/uber/cadence/service/history/failover
 
 package failover
 
@@ -31,6 +31,7 @@ import (
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
+	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/service/history/config"
 	"github.com/uber/cadence/service/history/shard"
 )
@@ -48,6 +49,7 @@ type (
 		config              *config.Config
 		failoverCoordinator Coordinator
 		logger              log.Logger
+		metrics             metrics.Client
 	}
 )
 
@@ -65,6 +67,7 @@ func NewMarkerNotifier(
 		config:              config,
 		failoverCoordinator: failoverCoordinator,
 		logger:              shard.GetLogger().WithTags(tag.ComponentFailoverMarkerNotifier),
+		metrics:             shard.GetMetricsClient(),
 	}
 }
 
@@ -79,7 +82,7 @@ func (m *markerNotifierImpl) Start() {
 	}
 
 	go m.notifyPendingFailoverMarker()
-	m.logger.Info("", tag.LifeCycleStarted)
+	m.logger.Info("Marker notifier state changed", tag.LifeCycleStarted)
 }
 
 func (m *markerNotifierImpl) Stop() {
@@ -92,25 +95,28 @@ func (m *markerNotifierImpl) Stop() {
 		return
 	}
 	close(m.shutdownCh)
-	m.logger.Info("", tag.LifeCycleStopped)
+	m.logger.Info("Marker notifier state changed", tag.LifeCycleStopped)
 }
 
 func (m *markerNotifierImpl) notifyPendingFailoverMarker() {
+
+	ticker := time.NewTicker(m.config.NotifyFailoverMarkerInterval())
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-m.shutdownCh:
 			return
-		default:
+		case <-ticker.C:
 			markers, err := m.shard.ValidateAndUpdateFailoverMarkers()
 			if err != nil {
+				m.metrics.IncCounter(metrics.FailoverMarkerScope, metrics.FailoverMarkerUpdateShardFailure)
 				m.logger.Error("Failed to update pending failover markers in shard info.", tag.Error(err))
 			}
 
 			if len(markers) > 0 {
 				m.failoverCoordinator.NotifyFailoverMarkers(int32(m.shard.GetShardID()), markers)
 			}
-			time.Sleep(m.config.NotifyFailoverMarkerInterval())
 		}
 	}
 }

@@ -21,22 +21,24 @@
 package queue
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/uber-go/tally"
 
 	"github.com/uber/cadence/common/cluster"
-	"github.com/uber/cadence/common/collection"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/loggerimpl"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/service/history/config"
+	"github.com/uber/cadence/service/history/constants"
 	"github.com/uber/cadence/service/history/shard"
 	"github.com/uber/cadence/service/history/task"
 )
@@ -51,11 +53,10 @@ type (
 		mockTaskProcessor    *task.MockProcessor
 		mockQueueSplitPolicy *MockProcessingQueueSplitPolicy
 
-		clusterName     string
-		redispatchQueue collection.Queue
-		logger          log.Logger
-		metricsClient   metrics.Client
-		metricsScope    metrics.Scope
+		clusterName   string
+		logger        log.Logger
+		metricsClient metrics.Client
+		metricsScope  metrics.Scope
 	}
 )
 
@@ -77,12 +78,12 @@ func (s *timerQueueProcessorBaseSuite) SetupTest() {
 		},
 		config.NewForTest(),
 	)
+	s.mockShard.Resource.DomainCache.EXPECT().GetDomainName(gomock.Any()).Return(constants.TestDomainName, nil).AnyTimes()
 	s.mockQueueSplitPolicy = NewMockProcessingQueueSplitPolicy(s.controller)
 	s.mockTaskProcessor = task.NewMockProcessor(s.controller)
 
 	s.clusterName = cluster.TestCurrentClusterName
-	s.redispatchQueue = collection.NewConcurrentQueue()
-	s.logger = loggerimpl.NewDevelopmentForTest(s.Suite)
+	s.logger = loggerimpl.NewLoggerForTest(s.Suite)
 	s.metricsClient = metrics.NewClient(tally.NoopScope, metrics.History)
 	s.metricsScope = s.metricsClient.Scope(metrics.TimerQueueProcessorScope)
 }
@@ -96,7 +97,7 @@ func (s *timerQueueProcessorBaseSuite) TestIsProcessNow() {
 	mockClusterMetadata := s.mockShard.Resource.ClusterMetadata
 	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
 	s.True(timerQueueProcessBase.isProcessNow(time.Time{}))
 
 	now := s.mockShard.GetCurrentTime(s.clusterName)
@@ -139,9 +140,9 @@ func (s *timerQueueProcessorBaseSuite) TestGetTimerTasks_More() {
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
 	timers, token, err := timerQueueProcessBase.getTimerTasks(readLevel, maxReadLevel, request.NextPageToken, batchSize)
 	s.Nil(err)
 	s.Equal(response.Timers, timers)
@@ -178,9 +179,9 @@ func (s *timerQueueProcessorBaseSuite) TestGetTimerTasks_NoMore() {
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
 	timers, token, err := timerQueueProcessBase.getTimerTasks(readLevel, maxReadLevel, request.NextPageToken, batchSize)
 	s.Nil(err)
 	s.Equal(response.Timers, timers)
@@ -221,9 +222,9 @@ func (s *timerQueueProcessorBaseSuite) TestReadLookAheadTask() {
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
 	lookAheadTask, err := timerQueueProcessBase.readLookAheadTask(readLevel, maxReadLevel)
 	s.Nil(err)
 	s.Equal(response.Timers[0], lookAheadTask)
@@ -235,7 +236,6 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_NoNext
 
 	readLevel := newTimerTaskKey(time.Now().Add(-10*time.Second), 0)
 	maxReadLevel := newTimerTaskKey(time.Now().Add(1*time.Second), 0)
-	lookAheadMaxLevel := newTimerTaskKey(time.Now().Add(10*time.Second), 0)
 
 	request := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  readLevel.(timerTaskKey).visibilityTimestamp,
@@ -246,7 +246,7 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_NoNext
 
 	lookAheadRequest := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  maxReadLevel.(timerTaskKey).visibilityTimestamp,
-		MaxTimestamp:  lookAheadMaxLevel.(timerTaskKey).visibilityTimestamp,
+		MaxTimestamp:  maximumTimerTaskKey.(timerTaskKey).visibilityTimestamp,
 		BatchSize:     1,
 		NextPageToken: nil,
 	}
@@ -269,11 +269,11 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_NoNext
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
-	mockExecutionMgr.On("GetTimerIndexTasks", lookAheadRequest).Return(&persistence.GetTimerIndexTasksResponse{}, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, lookAheadRequest).Return(&persistence.GetTimerIndexTasksResponse{}, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
-	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken, lookAheadMaxLevel)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal(response.Timers, filteredTasks)
 	s.Nil(lookAheadTask)
@@ -286,7 +286,6 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_HasNex
 
 	readLevel := newTimerTaskKey(time.Now().Add(-10*time.Second), 0)
 	maxReadLevel := newTimerTaskKey(time.Now().Add(1*time.Second), 0)
-	lookAheadMaxLevel := newTimerTaskKey(time.Now().Add(10*time.Second), 0)
 
 	request := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  readLevel.(timerTaskKey).visibilityTimestamp,
@@ -313,10 +312,10 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_HasNex
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
-	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken, lookAheadMaxLevel)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal(response.Timers, filteredTasks)
 	s.Nil(lookAheadTask)
@@ -329,7 +328,6 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_NoNex
 
 	readLevel := newTimerTaskKey(time.Now().Add(-10*time.Second), 0)
 	maxReadLevel := newTimerTaskKey(time.Now().Add(1*time.Second), 0)
-	lookAheadMaxLevel := newTimerTaskKey(time.Now().Add(10*time.Second), 0)
 
 	request := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  readLevel.(timerTaskKey).visibilityTimestamp,
@@ -355,7 +353,7 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_NoNex
 				DomainID:            "some random domain ID",
 				WorkflowID:          "some random workflow ID",
 				RunID:               uuid.New(),
-				VisibilityTimestamp: time.Now().Add(500 * time.Second),
+				VisibilityTimestamp: time.Now().Add(500 * time.Millisecond),
 				TaskID:              int64(59),
 				TaskType:            1,
 				TimeoutType:         2,
@@ -367,10 +365,10 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_NoNex
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
-	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken, lookAheadMaxLevel)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal([]*persistence.TimerTaskInfo{response.Timers[0]}, filteredTasks)
 	s.Equal(response.Timers[1], lookAheadTask)
@@ -383,7 +381,6 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_HasNe
 
 	readLevel := newTimerTaskKey(time.Now().Add(-10*time.Second), 0)
 	maxReadLevel := newTimerTaskKey(time.Now().Add(1*time.Second), 0)
-	lookAheadMaxLevel := newTimerTaskKey(time.Now().Add(10*time.Second), 0)
 
 	request := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  readLevel.(timerTaskKey).visibilityTimestamp,
@@ -409,7 +406,7 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_HasNe
 				DomainID:            "some random domain ID",
 				WorkflowID:          "some random workflow ID",
 				RunID:               uuid.New(),
-				VisibilityTimestamp: time.Now().Add(500 * time.Second),
+				VisibilityTimestamp: time.Now().Add(500 * time.Millisecond),
 				TaskID:              int64(59),
 				TaskType:            1,
 				TimeoutType:         2,
@@ -421,53 +418,79 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_HasNe
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
-	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken, lookAheadMaxLevel)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal([]*persistence.TimerTaskInfo{response.Timers[0]}, filteredTasks)
 	s.Equal(response.Timers[1], lookAheadTask)
 	s.Nil(nextPageToken)
 }
 
-func (s *timerQueueProcessorBaseSuite) TestUpdateAckLevel() {
-	now := time.Now()
-	processingQueueStates := []ProcessingQueueState{
-		NewProcessingQueueState(
-			2,
-			newTimerTaskKey(now.Add(-5*time.Second), 0),
-			newTimerTaskKey(now, 0),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, false),
-		),
-		NewProcessingQueueState(
-			1,
-			newTimerTaskKey(now.Add(-3*time.Second), 0),
-			newTimerTaskKey(now.Add(5*time.Second), 0),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, false),
-		),
-		NewProcessingQueueState(
-			0,
-			newTimerTaskKey(now.Add(-1*time.Second), 0),
-			newTimerTaskKey(now.Add(100*time.Second), 0),
-			NewDomainFilter(map[string]struct{}{"testDomain1": {}, "testDomain2": {}}, true),
-		),
-	}
-	updateAckLevel := time.Time{}
-	updateTransferAckLevelFn := func(ackLevel task.Key) error {
-		updateAckLevel = ackLevel.(timerTaskKey).visibilityTimestamp
-		return nil
+func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_LookAheadFailed_NoNextPage() {
+	mockClusterMetadata := s.mockShard.Resource.ClusterMetadata
+	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
+
+	readLevel := newTimerTaskKey(time.Now().Add(-10*time.Second), 0)
+	maxReadLevel := newTimerTaskKey(time.Now().Add(1*time.Second), 0)
+
+	request := &persistence.GetTimerIndexTasksRequest{
+		MinTimestamp:  readLevel.(timerTaskKey).visibilityTimestamp,
+		MaxTimestamp:  maxReadLevel.(timerTaskKey).visibilityTimestamp,
+		BatchSize:     s.mockShard.GetConfig().TimerTaskBatchSize(),
+		NextPageToken: []byte("some random input next page token"),
 	}
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(processingQueueStates, nil, updateTransferAckLevelFn, nil, nil)
-	processFinished, err := timerQueueProcessBase.updateAckLevel()
-	s.NoError(err)
-	s.False(processFinished)
-	s.Equal(now.Add(-5*time.Second), updateAckLevel)
+	lookAheadRequest := &persistence.GetTimerIndexTasksRequest{
+		MinTimestamp:  maxReadLevel.(timerTaskKey).visibilityTimestamp,
+		MaxTimestamp:  maximumTimerTaskKey.(timerTaskKey).visibilityTimestamp,
+		BatchSize:     1,
+		NextPageToken: nil,
+	}
+
+	response := &persistence.GetTimerIndexTasksResponse{
+		Timers: []*persistence.TimerTaskInfo{
+			{
+				DomainID:            "some random domain ID",
+				WorkflowID:          "some random workflow ID",
+				RunID:               uuid.New(),
+				VisibilityTimestamp: time.Now().Add(-5 * time.Second),
+				TaskID:              int64(59),
+				TaskType:            1,
+				TimeoutType:         2,
+				EventID:             int64(28),
+				ScheduleAttempt:     0,
+			},
+			{
+				DomainID:            "some random domain ID",
+				WorkflowID:          "some random workflow ID",
+				RunID:               uuid.New(),
+				VisibilityTimestamp: time.Now().Add(-500 * time.Second),
+				TaskID:              int64(59),
+				TaskType:            1,
+				TimeoutType:         2,
+				EventID:             int64(28),
+				ScheduleAttempt:     0,
+			},
+		},
+		NextPageToken: nil,
+	}
+
+	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, lookAheadRequest).Return(nil, errors.New("some random error")).Times(s.mockShard.GetConfig().TimerProcessorGetFailureRetryCount())
+
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	filteredTasks, lookAheadTask, nextPageToken, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
+	s.Nil(err)
+	s.Equal(response.Timers, filteredTasks)
+	s.Equal(maxReadLevel.(timerTaskKey).visibilityTimestamp, lookAheadTask.VisibilityTimestamp)
+	s.Nil(nextPageToken)
 }
 
 func (s *timerQueueProcessorBaseSuite) TestNotifyNewTimes() {
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
 
 	// assert the initial state
 	s.True(timerQueueProcessBase.newTime.IsZero())
@@ -511,28 +534,29 @@ func (s *timerQueueProcessorBaseSuite) TestNotifyNewTimes() {
 	}
 }
 
-func (s *timerQueueProcessorBaseSuite) TestProcessBatch_SkipRead() {
+func (s *timerQueueProcessorBaseSuite) TestProcessQueueCollections_SkipRead() {
+	mockClusterMetadata := s.mockShard.Resource.ClusterMetadata
+	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
+
 	now := time.Now()
+	queueLevel := 0
 	shardMaxReadLevel := newTimerTaskKey(now, 0)
 	ackLevel := newTimerTaskKey(now.Add(50*time.Millisecond), 0)
 	maxLevel := newTimerTaskKey(now.Add(10*time.Second), 0)
 	processingQueueStates := []ProcessingQueueState{
 		NewProcessingQueueState(
-			0,
+			queueLevel,
 			ackLevel,
 			maxLevel,
 			NewDomainFilter(map[string]struct{}{"testDomain1": {}}, false),
 		),
 	}
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(s.mockShard, taskInfo, task.QueueTypeActiveTimer, nil, nil, nil, nil, s.mockShard.GetTimeSource(), nil, nil)
-	}
 	updateMaxReadLevel := func() task.Key {
 		return shardMaxReadLevel
 	}
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(processingQueueStates, updateMaxReadLevel, nil, nil, taskInitializer)
-	timerQueueProcessBase.processBatch()
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
 	s.Len(timerQueueProcessBase.processingQueueCollections[0].Queues(), 1)
@@ -544,8 +568,9 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_SkipRead() {
 
 	s.Empty(timerQueueProcessBase.processingQueueReadProgress)
 
-	// check if timer gate is updated
+	s.Empty(timerQueueProcessBase.backoffTimer)
 	time.Sleep(100 * time.Millisecond)
+	s.True(timerQueueProcessBase.nextPollTime[queueLevel].Before(s.mockShard.GetTimeSource().Now()))
 	select {
 	case <-timerQueueProcessBase.timerGate.FireChan():
 	default:
@@ -558,19 +583,17 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_HasNextPage() {
 	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
 
 	now := time.Now()
+	queueLevel := 0
 	ackLevel := newTimerTaskKey(now.Add(-5*time.Second), 0)
 	shardMaxReadLevel := newTimerTaskKey(now.Add(1*time.Second), 0)
 	maxLevel := newTimerTaskKey(now.Add(10*time.Second), 0)
 	processingQueueStates := []ProcessingQueueState{
 		NewProcessingQueueState(
-			0,
+			queueLevel,
 			ackLevel,
 			maxLevel,
 			NewDomainFilter(map[string]struct{}{"excludedDomain": {}}, true),
 		),
-	}
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(s.mockShard, taskInfo, task.QueueTypeActiveTimer, nil, nil, nil, nil, s.mockShard.GetTimeSource(), nil, nil)
 	}
 	updateMaxReadLevel := func() task.Key {
 		return shardMaxReadLevel
@@ -612,12 +635,12 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_HasNextPage() {
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(processingQueueStates, updateMaxReadLevel, nil, nil, taskInitializer)
-	timerQueueProcessBase.processBatch()
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
 	s.Len(timerQueueProcessBase.processingQueueCollections[0].Queues(), 1)
@@ -636,7 +659,14 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_HasNextPage() {
 		nextPageToken: response.NextPageToken,
 	}, timerQueueProcessBase.processingQueueReadProgress[0])
 
-	s.True(timerQueueProcessBase.newTime.IsZero())
+	s.True(timerQueueProcessBase.nextPollTime[queueLevel].IsZero())
+	s.Empty(timerQueueProcessBase.backoffTimer)
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-timerQueueProcessBase.timerGate.FireChan():
+	default:
+		s.Fail("timer gate should fire")
+	}
 }
 
 func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_HasLookAhead() {
@@ -644,19 +674,17 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_HasLookAhead(
 	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
 
 	now := time.Now()
+	queueLevel := 0
 	ackLevel := newTimerTaskKey(now.Add(-5*time.Second), 0)
 	shardMaxReadLevel := newTimerTaskKey(now.Add(1*time.Second), 0)
 	maxLevel := newTimerTaskKey(now.Add(10*time.Second), 0)
 	processingQueueStates := []ProcessingQueueState{
 		NewProcessingQueueState(
-			0,
+			queueLevel,
 			ackLevel,
 			maxLevel,
 			NewDomainFilter(map[string]struct{}{"excludedDomain": {}}, true),
 		),
-	}
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(s.mockShard, taskInfo, task.QueueTypeActiveTimer, nil, nil, nil, nil, s.mockShard.GetTimeSource(), nil, nil)
 	}
 	updateMaxReadLevel := func() task.Key {
 		return shardMaxReadLevel
@@ -700,18 +728,18 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_HasLookAhead(
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(processingQueueStates, updateMaxReadLevel, nil, nil, taskInitializer)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
 	timerQueueProcessBase.processingQueueReadProgress[0] = timeTaskReadProgress{
 		currentQueue:  timerQueueProcessBase.processingQueueCollections[0].ActiveQueue(),
 		readLevel:     ackLevel,
 		maxReadLevel:  shardMaxReadLevel,
 		nextPageToken: requestNextPageToken,
 	}
-	timerQueueProcessBase.processBatch()
+	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
 	s.Len(timerQueueProcessBase.processingQueueCollections[0].Queues(), 1)
@@ -724,7 +752,8 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_HasLookAhead(
 
 	s.Empty(timerQueueProcessBase.processingQueueReadProgress)
 
-	// check if timer gate is updated
+	s.Empty(timerQueueProcessBase.backoffTimer)
+	s.Equal(lookAheadTaskTimestamp, timerQueueProcessBase.nextPollTime[queueLevel])
 	time.Sleep(100 * time.Millisecond)
 	select {
 	case <-timerQueueProcessBase.timerGate.FireChan():
@@ -738,19 +767,17 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_NoLookAhead()
 	mockClusterMetadata.EXPECT().GetCurrentClusterName().Return(s.clusterName).AnyTimes()
 
 	now := time.Now()
+	queueLevel := 0
 	ackLevel := newTimerTaskKey(now.Add(-5*time.Second), 0)
 	shardMaxReadLevel := newTimerTaskKey(now.Add(1*time.Second), 0)
 	maxLevel := newTimerTaskKey(now.Add(10*time.Second), 0)
 	processingQueueStates := []ProcessingQueueState{
 		NewProcessingQueueState(
-			0,
+			queueLevel,
 			ackLevel,
 			maxLevel,
 			NewDomainFilter(map[string]struct{}{"excludedDomain": {}}, true),
 		),
-	}
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(s.mockShard, taskInfo, task.QueueTypeActiveTimer, nil, nil, nil, nil, s.mockShard.GetTimeSource(), nil, nil)
 	}
 	updateMaxReadLevel := func() task.Key {
 		return shardMaxReadLevel
@@ -766,7 +793,7 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_NoLookAhead()
 
 	lookAheadRequest := &persistence.GetTimerIndexTasksRequest{
 		MinTimestamp:  shardMaxReadLevel.(timerTaskKey).visibilityTimestamp,
-		MaxTimestamp:  maxLevel.(timerTaskKey).visibilityTimestamp,
+		MaxTimestamp:  maximumTimerTaskKey.(timerTaskKey).visibilityTimestamp,
 		BatchSize:     1,
 		NextPageToken: nil,
 	}
@@ -800,19 +827,19 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_NoLookAhead()
 	}
 
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
-	mockExecutionMgr.On("GetTimerIndexTasks", request).Return(response, nil).Once()
-	mockExecutionMgr.On("GetTimerIndexTasks", lookAheadRequest).Return(&persistence.GetTimerIndexTasksResponse{}, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
+	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, lookAheadRequest).Return(&persistence.GetTimerIndexTasksResponse{}, nil).Once()
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessBase(processingQueueStates, updateMaxReadLevel, nil, nil, taskInitializer)
+	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
 	timerQueueProcessBase.processingQueueReadProgress[0] = timeTaskReadProgress{
 		currentQueue:  timerQueueProcessBase.processingQueueCollections[0].ActiveQueue(),
 		readLevel:     ackLevel,
 		maxReadLevel:  shardMaxReadLevel,
 		nextPageToken: requestNextPageToken,
 	}
-	timerQueueProcessBase.processBatch()
+	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
 	s.Len(timerQueueProcessBase.processingQueueCollections[0].Queues(), 1)
@@ -825,28 +852,36 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_NoLookAhead()
 
 	s.Empty(timerQueueProcessBase.processingQueueReadProgress)
 
-	s.True(timerQueueProcessBase.newTime.IsZero())
+	_, ok := timerQueueProcessBase.nextPollTime[queueLevel]
+	s.True(ok) // this is the poll time for max poll interval
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-timerQueueProcessBase.timerGate.FireChan():
+		s.Fail("timer gate should not fire")
+	default:
+	}
 }
 
-func (s *timerQueueProcessorBaseSuite) newTestTimerQueueProcessBase(
+func (s *timerQueueProcessorBaseSuite) newTestTimerQueueProcessorBase(
 	processingQueueStates []ProcessingQueueState,
-	maxReadLevel updateMaxReadLevelFn,
-	updateTransferAckLevel updateClusterAckLevelFn,
-	transferQueueShutdown queueShutdownFn,
-	taskInitializer task.Initializer,
+	updateMaxReadLevel updateMaxReadLevelFn,
+	updateClusterAckLevel updateClusterAckLevelFn,
+	updateProcessingQueueStates updateProcessingQueueStatesFn,
+	queueShutdown queueShutdownFn,
 ) *timerQueueProcessorBase {
 	return newTimerQueueProcessorBase(
 		s.clusterName,
 		s.mockShard,
 		processingQueueStates,
 		s.mockTaskProcessor,
-		s.redispatchQueue,
 		NewLocalTimerGate(s.mockShard.GetTimeSource()),
 		newTimerQueueProcessorOptions(s.mockShard.GetConfig(), true, false),
-		maxReadLevel,
-		updateTransferAckLevel,
-		transferQueueShutdown,
-		taskInitializer,
+		updateMaxReadLevel,
+		updateClusterAckLevel,
+		updateProcessingQueueStates,
+		queueShutdown,
+		nil,
+		nil,
 		s.logger,
 		s.metricsClient,
 	)

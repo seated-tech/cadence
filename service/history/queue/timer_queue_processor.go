@@ -29,14 +29,14 @@ import (
 
 	"github.com/pborman/uuid"
 
-	h "github.com/uber/cadence/.gen/go/history"
 	"github.com/uber/cadence/common"
-	"github.com/uber/cadence/common/collection"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
+	"github.com/uber/cadence/common/ndc"
 	"github.com/uber/cadence/common/persistence"
-	"github.com/uber/cadence/common/xdc"
+	"github.com/uber/cadence/common/reconciliation/invariant"
+	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/history/config"
 	"github.com/uber/cadence/service/history/engine"
 	"github.com/uber/cadence/service/history/execution"
@@ -78,9 +78,11 @@ func NewTimerQueueProcessor(
 	taskProcessor task.Processor,
 	executionCache *execution.Cache,
 	archivalClient archiver.Client,
+	executionCheck invariant.Invariant,
 ) Processor {
 	logger := shard.GetLogger().WithTags(tag.ComponentTimerQueue)
 	currentClusterName := shard.GetClusterMetadata().GetCurrentClusterName()
+	config := shard.GetConfig()
 	taskAllocator := NewTaskAllocator(shard)
 
 	activeTaskExecutor := task.NewTimerActiveTaskExecutor(
@@ -89,7 +91,7 @@ func NewTimerQueueProcessor(
 		executionCache,
 		logger,
 		shard.GetMetricsClient(),
-		shard.GetConfig(),
+		config,
 	)
 
 	activeQueueProcessor := newTimerQueueActiveProcessor(
@@ -104,45 +106,31 @@ func NewTimerQueueProcessor(
 
 	standbyQueueProcessors := make(map[string]*timerQueueProcessorBase)
 	standbyQueueTimerGates := make(map[string]RemoteTimerGate)
-	rereplicatorLogger := shard.GetLogger().WithTags(tag.ComponentHistoryResender)
-	resenderLogger := shard.GetLogger().WithTags(tag.ComponentHistoryResender)
 	for clusterName, info := range shard.GetClusterMetadata().GetAllClusterInfo() {
 		if !info.Enabled || clusterName == currentClusterName {
 			continue
 		}
 
-		historyRereplicator := xdc.NewHistoryRereplicator(
-			currentClusterName,
+		historyResender := ndc.NewHistoryResender(
 			shard.GetDomainCache(),
 			shard.GetService().GetClientBean().GetRemoteAdminClient(clusterName),
-			func(ctx context.Context, request *h.ReplicateRawEventsRequest) error {
-				return historyEngine.ReplicateRawEvents(ctx, request)
-			},
-			shard.GetService().GetPayloadSerializer(),
-			historyRereplicationTimeout,
-			nil,
-			rereplicatorLogger,
-		)
-		nDCHistoryResender := xdc.NewNDCHistoryResender(
-			shard.GetDomainCache(),
-			shard.GetService().GetClientBean().GetRemoteAdminClient(clusterName),
-			func(ctx context.Context, request *h.ReplicateEventsV2Request) error {
+			func(ctx context.Context, request *types.ReplicateEventsV2Request) error {
 				return historyEngine.ReplicateEventsV2(ctx, request)
 			},
 			shard.GetService().GetPayloadSerializer(),
-			nil,
-			resenderLogger,
+			config.StandbyTaskReReplicationContextTimeout,
+			executionCheck,
+			shard.GetLogger().WithTags(tag.ComponentHistoryResender),
 		)
 		standbyTaskExecutor := task.NewTimerStandbyTaskExecutor(
 			shard,
 			archivalClient,
 			executionCache,
-			historyRereplicator,
-			nDCHistoryResender,
+			historyResender,
 			logger,
 			shard.GetMetricsClient(),
 			clusterName,
-			shard.GetConfig(),
+			config,
 		)
 		standbyQueueProcessors[clusterName], standbyQueueTimerGates[clusterName] = newTimerQueueStandbyProcessor(
 			clusterName,
@@ -160,7 +148,7 @@ func NewTimerQueueProcessor(
 		historyEngine: historyEngine,
 		taskProcessor: taskProcessor,
 
-		config:                shard.GetConfig(),
+		config:                config,
 		isGlobalDomainEnabled: shard.GetClusterMetadata().IsGlobalDomainEnabled(),
 		currentClusterName:    currentClusterName,
 
@@ -213,6 +201,7 @@ func (t *timerQueueProcessor) Stop() {
 
 func (t *timerQueueProcessor) NotifyNewTask(
 	clusterName string,
+	_ *persistence.WorkflowExecutionInfo,
 	timerTasks []persistence.Task,
 ) {
 	if clusterName == t.currentClusterName {
@@ -237,6 +226,13 @@ func (t *timerQueueProcessor) NotifyNewTask(
 func (t *timerQueueProcessor) FailoverDomain(
 	domainIDs map[string]struct{},
 ) {
+	// Failover queue is used to scan all inflight tasks, if queue processor is not
+	// started, there's no inflight task and we don't need to create a failover processor.
+	// Also the HandleAction will be blocked if queue processor processing loop is not running.
+	if atomic.LoadInt32(&t.status) != common.DaemonStatusStarted {
+		return
+	}
+
 	minLevel := t.shard.GetTimerClusterAckLevel(t.currentClusterName)
 	standbyClusterName := t.currentClusterName
 	for clusterName, info := range t.shard.GetClusterMetadata().GetAllClusterInfo() {
@@ -252,7 +248,17 @@ func (t *timerQueueProcessor) FailoverDomain(
 	}
 
 	maxReadLevel := time.Time{}
-	for _, queueState := range t.activeQueueProcessor.getProcessingQueueStates() {
+	actionResult, err := t.HandleAction(t.currentClusterName, NewGetStateAction())
+	if err != nil {
+		t.logger.Error("Timer Failover Failed", tag.WorkflowDomainIDs(domainIDs), tag.Error(err))
+		if err == errProcessorShutdown {
+			// processor/shard already shutdown, we don't need to create failover queue processor
+			return
+		}
+		// other errors should never be returned for GetStateAction
+		panic(fmt.Sprintf("unknown error for GetStateAction: %v", err))
+	}
+	for _, queueState := range actionResult.GetStateActionResult.States {
 		queueReadLevel := queueState.ReadLevel().(timerTaskKey).visibilityTimestamp
 		if maxReadLevel.Before(queueReadLevel) {
 			maxReadLevel = queueReadLevel
@@ -281,11 +287,43 @@ func (t *timerQueueProcessor) FailoverDomain(
 
 	// NOTE: READ REF BEFORE MODIFICATION
 	// ref: historyEngine.go registerDomainFailoverCallback function
-	err := updateClusterAckLevelFn(newTimerTaskKey(minLevel, 0))
+	err = updateClusterAckLevelFn(newTimerTaskKey(minLevel, 0))
 	if err != nil {
 		t.logger.Error("Error update shard ack level", tag.Error(err))
 	}
 	failoverQueueProcessor.Start()
+}
+
+func (t *timerQueueProcessor) HandleAction(clusterName string, action *Action) (*ActionResult, error) {
+	var resultNotificationCh chan actionResultNotification
+	var added bool
+	if clusterName == t.currentClusterName {
+		resultNotificationCh, added = t.activeQueueProcessor.addAction(action)
+	} else {
+		found := false
+		for standbyClusterName, standbyProcessor := range t.standbyQueueProcessors {
+			if clusterName == standbyClusterName {
+				resultNotificationCh, added = standbyProcessor.addAction(action)
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return nil, fmt.Errorf("unknown cluster name: %v", clusterName)
+		}
+	}
+
+	if !added {
+		return nil, errProcessorShutdown
+	}
+
+	select {
+	case resultNotification := <-resultNotificationCh:
+		return resultNotification.result, resultNotification.err
+	case <-t.shutdownChan:
+		return nil, errProcessorShutdown
+	}
 }
 
 func (t *timerQueueProcessor) LockTaskProcessing() {
@@ -339,13 +377,21 @@ func (t *timerQueueProcessor) completeTimerLoop() {
 
 func (t *timerQueueProcessor) completeTimer() error {
 	newAckLevel := maximumTimerTaskKey
-	for _, queueState := range t.activeQueueProcessor.getProcessingQueueStates() {
+	actionResult, err := t.HandleAction(t.currentClusterName, NewGetStateAction())
+	if err != nil {
+		return err
+	}
+	for _, queueState := range actionResult.GetStateActionResult.States {
 		newAckLevel = minTaskKey(newAckLevel, queueState.AckLevel())
 	}
 
 	if t.isGlobalDomainEnabled {
-		for _, standbyQueueProcessor := range t.standbyQueueProcessors {
-			for _, queueState := range standbyQueueProcessor.getProcessingQueueStates() {
+		for standbyClusterName := range t.standbyQueueProcessors {
+			actionResult, err := t.HandleAction(standbyClusterName, NewGetStateAction())
+			if err != nil {
+				return err
+			}
+			for _, queueState := range actionResult.GetStateActionResult.States {
 				newAckLevel = minTaskKey(newAckLevel, queueState.AckLevel())
 			}
 		}
@@ -360,22 +406,22 @@ func (t *timerQueueProcessor) completeTimer() error {
 		panic("Unable to get timer queue processor ack level")
 	}
 
-	newAckLevelTimeStamp := newAckLevel.(timerTaskKey).visibilityTimestamp
-	t.logger.Debug(fmt.Sprintf("Start completing timer task from: %v, to %v", t.ackLevel, newAckLevelTimeStamp))
-	if !t.ackLevel.Before(newAckLevelTimeStamp) {
+	newAckLevelTimestamp := newAckLevel.(timerTaskKey).visibilityTimestamp
+	t.logger.Debug(fmt.Sprintf("Start completing timer task from: %v, to %v", t.ackLevel, newAckLevelTimestamp))
+	if !t.ackLevel.Before(newAckLevelTimestamp) {
 		return nil
 	}
 
 	t.metricsClient.IncCounter(metrics.TimerQueueProcessorScope, metrics.TaskBatchCompleteCounter)
 
-	if err := t.shard.GetExecutionManager().RangeCompleteTimerTask(&persistence.RangeCompleteTimerTaskRequest{
+	if err := t.shard.GetExecutionManager().RangeCompleteTimerTask(context.Background(), &persistence.RangeCompleteTimerTaskRequest{
 		InclusiveBeginTimestamp: t.ackLevel,
-		ExclusiveEndTimestamp:   newAckLevelTimeStamp,
+		ExclusiveEndTimestamp:   newAckLevelTimestamp,
 	}); err != nil {
 		return err
 	}
 
-	t.ackLevel = newAckLevelTimeStamp
+	t.ackLevel = newAckLevelTimestamp
 
 	return t.shard.UpdateTimerAckLevel(t.ackLevel)
 }
@@ -402,7 +448,7 @@ func newTimerQueueActiveProcessor(
 		return taskAllocator.VerifyActiveTask(timer.DomainID, timer)
 	}
 
-	maxReadLevel := func() task.Key {
+	updateMaxReadLevel := func() task.Key {
 		return newTimerTaskKey(shard.UpdateTimerMaxReadLevel(clusterName), 0)
 	}
 
@@ -410,53 +456,28 @@ func newTimerQueueActiveProcessor(
 		return shard.UpdateTimerClusterAckLevel(clusterName, ackLevel.(timerTaskKey).visibilityTimestamp)
 	}
 
-	timerQueueShutdown := func() error {
+	updateProcessingQueueStates := func(states []ProcessingQueueState) error {
+		pStates := convertToPersistenceTimerProcessingQueueStates(states)
+		return shard.UpdateTimerProcessingQueueStates(clusterName, pStates)
+	}
+
+	queueShutdown := func() error {
 		return nil
-	}
-
-	redispatchQueue := collection.NewConcurrentQueue()
-
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(
-			shard,
-			taskInfo,
-			task.QueueTypeActiveTimer,
-			task.InitializeLoggerForTask(shard.GetShardID(), taskInfo, logger),
-			taskFilter,
-			taskExecutor,
-			func(task task.Task) {
-				redispatchQueue.Add(task)
-			},
-			shard.GetTimeSource(),
-			config.TimerTaskMaxRetryCount,
-			nil,
-		)
-	}
-
-	// TODO: once persistency layer is implemented for multi-cursor queue,
-	// initialize queue states with data loaded from DB.
-	ackLevel := newTimerTaskKey(shard.GetTimerClusterAckLevel(clusterName), 0)
-	processingQueueStates := []ProcessingQueueState{
-		NewProcessingQueueState(
-			defaultProcessingQueueLevel,
-			ackLevel,
-			maximumTimerTaskKey,
-			NewDomainFilter(nil, true),
-		),
 	}
 
 	return newTimerQueueProcessorBase(
 		clusterName,
 		shard,
-		processingQueueStates,
+		loadTimerProcessingQueueStates(clusterName, shard, options, logger),
 		taskProcessor,
-		redispatchQueue,
 		NewLocalTimerGate(shard.GetTimeSource()),
 		options,
-		maxReadLevel,
+		updateMaxReadLevel,
 		updateClusterAckLevel,
-		timerQueueShutdown,
-		taskInitializer,
+		updateProcessingQueueStates,
+		queueShutdown,
+		taskFilter,
+		taskExecutor,
 		logger,
 		shard.GetMetricsClient(),
 	)
@@ -484,7 +505,7 @@ func newTimerQueueStandbyProcessor(
 		return taskAllocator.VerifyStandbyTask(clusterName, timer.DomainID, timer)
 	}
 
-	maxReadLevel := func() task.Key {
+	updateMaxReadLevel := func() task.Key {
 		return newTimerTaskKey(shard.UpdateTimerMaxReadLevel(clusterName), 0)
 	}
 
@@ -492,39 +513,13 @@ func newTimerQueueStandbyProcessor(
 		return shard.UpdateTimerClusterAckLevel(clusterName, ackLevel.(timerTaskKey).visibilityTimestamp)
 	}
 
-	timerQueueShutdown := func() error {
+	updateProcessingQueueStates := func(states []ProcessingQueueState) error {
+		pStates := convertToPersistenceTimerProcessingQueueStates(states)
+		return shard.UpdateTimerProcessingQueueStates(clusterName, pStates)
+	}
+
+	queueShutdown := func() error {
 		return nil
-	}
-
-	redispatchQueue := collection.NewConcurrentQueue()
-
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(
-			shard,
-			taskInfo,
-			task.QueueTypeStandbyTimer,
-			task.InitializeLoggerForTask(shard.GetShardID(), taskInfo, logger),
-			taskFilter,
-			taskExecutor,
-			func(task task.Task) {
-				redispatchQueue.Add(task)
-			},
-			shard.GetTimeSource(),
-			config.TimerTaskMaxRetryCount,
-			nil,
-		)
-	}
-
-	// TODO: once persistency layer is implemented for multi-cursor queue,
-	// initialize queue states with data loaded from DB.
-	ackLevel := newTimerTaskKey(shard.GetTimerClusterAckLevel(clusterName), 0)
-	processingQueueStates := []ProcessingQueueState{
-		NewProcessingQueueState(
-			defaultProcessingQueueLevel,
-			ackLevel,
-			maximumTimerTaskKey,
-			NewDomainFilter(nil, true),
-		),
 	}
 
 	remoteTimerGate := NewRemoteTimerGate()
@@ -533,15 +528,16 @@ func newTimerQueueStandbyProcessor(
 	return newTimerQueueProcessorBase(
 		clusterName,
 		shard,
-		processingQueueStates,
+		loadTimerProcessingQueueStates(clusterName, shard, options, logger),
 		taskProcessor,
-		redispatchQueue,
 		remoteTimerGate,
 		options,
-		maxReadLevel,
+		updateMaxReadLevel,
 		updateClusterAckLevel,
-		timerQueueShutdown,
-		taskInitializer,
+		updateProcessingQueueStates,
+		queueShutdown,
+		taskFilter,
+		taskExecutor,
 		logger,
 		shard.GetMetricsClient(),
 	), remoteTimerGate
@@ -579,7 +575,7 @@ func newTimerQueueFailoverProcessor(
 	}
 
 	maxReadLevelTaskKey := newTimerTaskKey(maxLevel, 0)
-	maxReadLevel := func() task.Key {
+	updateMaxReadLevel := func() task.Key {
 		return maxReadLevelTaskKey // this is a const
 	}
 
@@ -596,31 +592,10 @@ func newTimerQueueFailoverProcessor(
 		)
 	}
 
-	timerQueueShutdown := func() error {
+	queueShutdown := func() error {
 		return shard.DeleteTimerFailoverLevel(failoverUUID)
 	}
 
-	redispatchQueue := collection.NewConcurrentQueue()
-
-	taskInitializer := func(taskInfo task.Info) task.Task {
-		return task.NewTimerTask(
-			shard,
-			taskInfo,
-			task.QueueTypeActiveTimer,
-			task.InitializeLoggerForTask(shard.GetShardID(), taskInfo, logger),
-			taskFilter,
-			taskExecutor,
-			func(task task.Task) {
-				redispatchQueue.Add(task)
-			},
-			shard.GetTimeSource(),
-			config.TimerTaskMaxRetryCount,
-			nil,
-		)
-	}
-
-	// TODO: once persistency layer is implemented for multi-cursor queue,
-	// initialize queue states with data loaded from DB.
 	processingQueueStates := []ProcessingQueueState{
 		NewProcessingQueueState(
 			defaultProcessingQueueLevel,
@@ -635,14 +610,44 @@ func newTimerQueueFailoverProcessor(
 		shard,
 		processingQueueStates,
 		taskProcessor,
-		redispatchQueue,
 		NewLocalTimerGate(shard.GetTimeSource()),
 		options,
-		maxReadLevel,
+		updateMaxReadLevel,
 		updateClusterAckLevel,
-		timerQueueShutdown,
-		taskInitializer,
+		nil,
+		queueShutdown,
+		taskFilter,
+		taskExecutor,
 		logger,
 		shard.GetMetricsClient(),
 	)
+}
+
+func loadTimerProcessingQueueStates(
+	clusterName string,
+	shard shard.Context,
+	options *queueProcessorOptions,
+	logger log.Logger,
+) []ProcessingQueueState {
+	ackLevel := shard.GetTimerClusterAckLevel(clusterName)
+	if options.EnableLoadQueueStates() {
+		pStates := shard.GetTimerProcessingQueueStates(clusterName)
+		if validateProcessingQueueStates(pStates, ackLevel) {
+			return convertFromPersistenceTimerProcessingQueueStates(pStates)
+		}
+
+		logger.Error("Incompatible processing queue states and ackLevel",
+			tag.Value(pStates),
+			tag.ShardTimerAcks(ackLevel),
+		)
+	}
+
+	return []ProcessingQueueState{
+		NewProcessingQueueState(
+			defaultProcessingQueueLevel,
+			newTimerTaskKey(ackLevel, 0),
+			maximumTimerTaskKey,
+			NewDomainFilter(nil, true),
+		),
+	}
 }

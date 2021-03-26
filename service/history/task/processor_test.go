@@ -22,7 +22,6 @@ package task
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -34,6 +33,7 @@ import (
 	"github.com/uber/cadence/common/log/loggerimpl"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/persistence"
+	"github.com/uber/cadence/common/service/dynamicconfig"
 	"github.com/uber/cadence/common/task"
 	"github.com/uber/cadence/service/history/config"
 	"github.com/uber/cadence/service/history/shard"
@@ -52,10 +52,6 @@ type (
 		logger        log.Logger
 
 		processor *processorImpl
-	}
-
-	mockQueueTaskMatcher struct {
-		task *MockTask
 	}
 )
 
@@ -79,7 +75,7 @@ func (s *queueTaskProcessorSuite) SetupTest() {
 	s.mockPriorityAssigner = NewMockPriorityAssigner(s.controller)
 
 	s.metricsClient = metrics.NewClient(tally.NoopScope, metrics.History)
-	s.logger = loggerimpl.NewDevelopmentForTest(s.Suite)
+	s.logger = loggerimpl.NewLoggerForTest(s.Suite)
 
 	s.processor = s.newTestQueueTaskProcessor()
 }
@@ -167,13 +163,13 @@ func (s *queueTaskProcessorSuite) TestStartStop() {
 func (s *queueTaskProcessorSuite) TestSubmit() {
 	mockTask := NewMockTask(s.controller)
 	mockTask.EXPECT().GetShard().Return(s.mockShard).Times(1)
-	s.mockPriorityAssigner.EXPECT().Assign(newMockQueueTaskMatcher(mockTask)).Return(nil).Times(1)
+	s.mockPriorityAssigner.EXPECT().Assign(NewMockTaskMatcher(mockTask)).Return(nil).Times(1)
 
 	mockScheduler := task.NewMockScheduler(s.controller)
-	mockScheduler.EXPECT().TrySubmit(newMockQueueTaskMatcher(mockTask)).Return(false, nil).Times(1)
+	mockScheduler.EXPECT().TrySubmit(NewMockTaskMatcher(mockTask)).Return(false, nil).Times(1)
 
 	mockShardScheduler := task.NewMockScheduler(s.controller)
-	mockShardScheduler.EXPECT().Submit(newMockQueueTaskMatcher(mockTask)).Return(nil).Times(1)
+	mockShardScheduler.EXPECT().Submit(NewMockTaskMatcher(mockTask)).Return(nil).Times(1)
 
 	s.processor.hostScheduler = mockScheduler
 	s.processor.shardSchedulers[s.mockShard] = mockShardScheduler
@@ -186,7 +182,7 @@ func (s *queueTaskProcessorSuite) TestTrySubmit_AssignPriorityFailed() {
 	mockTask := NewMockTask(s.controller)
 
 	errAssignPriority := errors.New("some randome error")
-	s.mockPriorityAssigner.EXPECT().Assign(newMockQueueTaskMatcher(mockTask)).Return(errAssignPriority).Times(1)
+	s.mockPriorityAssigner.EXPECT().Assign(NewMockTaskMatcher(mockTask)).Return(errAssignPriority).Times(1)
 
 	submitted, err := s.processor.TrySubmit(mockTask)
 	s.Equal(errAssignPriority, err)
@@ -195,11 +191,11 @@ func (s *queueTaskProcessorSuite) TestTrySubmit_AssignPriorityFailed() {
 
 func (s *queueTaskProcessorSuite) TestTrySubmit_Fail() {
 	mockTask := NewMockTask(s.controller)
-	s.mockPriorityAssigner.EXPECT().Assign(newMockQueueTaskMatcher(mockTask)).Return(nil).Times(1)
+	s.mockPriorityAssigner.EXPECT().Assign(NewMockTaskMatcher(mockTask)).Return(nil).Times(1)
 
 	errTrySubmit := errors.New("some randome error")
 	mockScheduler := task.NewMockScheduler(s.controller)
-	mockScheduler.EXPECT().TrySubmit(newMockQueueTaskMatcher(mockTask)).Return(false, errTrySubmit).Times(1)
+	mockScheduler.EXPECT().TrySubmit(NewMockTaskMatcher(mockTask)).Return(false, errTrySubmit).Times(1)
 
 	s.processor.hostScheduler = mockScheduler
 
@@ -209,13 +205,14 @@ func (s *queueTaskProcessorSuite) TestTrySubmit_Fail() {
 }
 
 func (s *queueTaskProcessorSuite) TestNewSchedulerOptions_UnknownSchedulerType() {
-	options, err := newSchedulerOptions(0, 100, 10, 1, nil)
+	options, err := newSchedulerOptions(0, 100, dynamicconfig.GetIntPropertyFn(10), 1, nil)
 	s.Error(err)
 	s.Nil(options)
 }
 
 func (s *queueTaskProcessorSuite) newTestQueueTaskProcessor() *processorImpl {
 	config := config.NewForTest()
+	config.TaskSchedulerShardWorkerCount = dynamicconfig.GetIntPropertyFn(1)
 	processor, err := NewProcessor(
 		s.mockPriorityAssigner,
 		config,
@@ -224,22 +221,4 @@ func (s *queueTaskProcessorSuite) newTestQueueTaskProcessor() *processorImpl {
 	)
 	s.NoError(err)
 	return processor.(*processorImpl)
-}
-
-func newMockQueueTaskMatcher(mockTask *MockTask) gomock.Matcher {
-	return &mockQueueTaskMatcher{
-		task: mockTask,
-	}
-}
-
-func (m *mockQueueTaskMatcher) Matches(x interface{}) bool {
-	taskPtr, ok := x.(*MockTask)
-	if !ok {
-		return false
-	}
-	return taskPtr == m.task
-}
-
-func (m *mockQueueTaskMatcher) String() string {
-	return fmt.Sprintf("is equal to %v", m.task)
 }

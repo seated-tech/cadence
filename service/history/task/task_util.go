@@ -21,16 +21,25 @@
 package task
 
 import (
+	"context"
 	"fmt"
 
-	workflow "github.com/uber/cadence/.gen/go/shared"
+	"github.com/golang/mock/gomock"
+
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/persistence"
+	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/history/execution"
 	"github.com/uber/cadence/service/history/shard"
+)
+
+type (
+	mockTaskMatcher struct {
+		task *MockTask
+	}
 )
 
 // InitializeLoggerForTask creates a new logger with additional tags for task info
@@ -209,15 +218,15 @@ func verifyTaskVersion(
 // load mutable state, if mutable state's next event ID <= task ID, will attempt to refresh
 // if still mutable state's next event ID <= task ID, will return nil, nil
 func loadMutableStateForTimerTask(
-	context execution.Context,
+	ctx context.Context,
+	wfContext execution.Context,
 	timerTask *persistence.TimerTaskInfo,
 	metricsClient metrics.Client,
 	logger log.Logger,
 ) (execution.MutableState, error) {
-
-	msBuilder, err := context.LoadWorkflowExecution()
+	msBuilder, err := wfContext.LoadWorkflowExecution(ctx)
 	if err != nil {
-		if _, ok := err.(*workflow.EntityNotExistsError); ok {
+		if _, ok := err.(*types.EntityNotExistsError); ok {
 			// this could happen if this is a duplicate processing of the task, and the execution has already completed.
 			return nil, nil
 		}
@@ -234,17 +243,24 @@ func loadMutableStateForTimerTask(
 
 	if timerTask.EventID >= msBuilder.GetNextEventID() && !isDecisionRetry {
 		metricsClient.IncCounter(metrics.TimerQueueProcessorScope, metrics.StaleMutableStateCounter)
-		context.Clear()
+		wfContext.Clear()
 
-		msBuilder, err = context.LoadWorkflowExecution()
+		msBuilder, err = wfContext.LoadWorkflowExecution(ctx)
 		if err != nil {
 			return nil, err
 		}
 		// after refresh, still mutable state's next event ID <= task ID
 		if timerTask.EventID >= msBuilder.GetNextEventID() {
-			logger.Info("Timer Task Processor: task event ID >= MS NextEventID, skip.",
+			metricsClient.IncCounter(metrics.TimerQueueProcessorScope, metrics.DataInconsistentCounter)
+			logger.Error("Timer Task Processor: task event ID >= MS NextEventID, skip.",
+				tag.WorkflowDomainID(timerTask.DomainID),
+				tag.WorkflowID(timerTask.WorkflowID),
+				tag.WorkflowRunID(timerTask.RunID),
+				tag.TaskType(timerTask.TaskType),
+				tag.TaskID(timerTask.TaskID),
 				tag.WorkflowEventID(timerTask.EventID),
-				tag.WorkflowNextEventID(msBuilder.GetNextEventID()))
+				tag.WorkflowNextEventID(msBuilder.GetNextEventID()),
+			)
 			return nil, nil
 		}
 	}
@@ -254,15 +270,16 @@ func loadMutableStateForTimerTask(
 // load mutable state, if mutable state's next event ID <= task ID, will attempt to refresh
 // if still mutable state's next event ID <= task ID, will return nil, nil
 func loadMutableStateForTransferTask(
-	context execution.Context,
+	ctx context.Context,
+	wfContext execution.Context,
 	transferTask *persistence.TransferTaskInfo,
 	metricsClient metrics.Client,
 	logger log.Logger,
 ) (execution.MutableState, error) {
 
-	msBuilder, err := context.LoadWorkflowExecution()
+	msBuilder, err := wfContext.LoadWorkflowExecution(ctx)
 	if err != nil {
-		if _, ok := err.(*workflow.EntityNotExistsError); ok {
+		if _, ok := err.(*types.EntityNotExistsError); ok {
 			// this could happen if this is a duplicate processing of the task, and the execution has already completed.
 			return nil, nil
 		}
@@ -279,17 +296,24 @@ func loadMutableStateForTransferTask(
 
 	if transferTask.ScheduleID >= msBuilder.GetNextEventID() && !isDecisionRetry {
 		metricsClient.IncCounter(metrics.TransferQueueProcessorScope, metrics.StaleMutableStateCounter)
-		context.Clear()
+		wfContext.Clear()
 
-		msBuilder, err = context.LoadWorkflowExecution()
+		msBuilder, err = wfContext.LoadWorkflowExecution(ctx)
 		if err != nil {
 			return nil, err
 		}
 		// after refresh, still mutable state's next event ID <= task ID
 		if transferTask.ScheduleID >= msBuilder.GetNextEventID() {
-			logger.Info("Transfer Task Processor: task event ID >= MS NextEventID, skip.",
+			metricsClient.IncCounter(metrics.TransferQueueProcessorScope, metrics.DataInconsistentCounter)
+			logger.Error("Transfer Task Processor: task event ID >= MS NextEventID, skip.",
+				tag.WorkflowDomainID(transferTask.DomainID),
+				tag.WorkflowID(transferTask.WorkflowID),
+				tag.WorkflowRunID(transferTask.RunID),
+				tag.TaskType(transferTask.TaskType),
+				tag.TaskID(transferTask.TaskID),
 				tag.WorkflowScheduleID(transferTask.ScheduleID),
-				tag.WorkflowNextEventID(msBuilder.GetNextEventID()))
+				tag.WorkflowNextEventID(msBuilder.GetNextEventID()),
+			)
 			return nil, nil
 		}
 	}
@@ -305,7 +329,7 @@ func timeoutWorkflow(
 		if err := execution.FailDecision(
 			mutableState,
 			decision,
-			workflow.DecisionTaskFailedCauseForceCloseDecision,
+			types.DecisionTaskFailedCauseForceCloseDecision,
 		); err != nil {
 			return err
 		}
@@ -318,23 +342,25 @@ func timeoutWorkflow(
 }
 
 func retryWorkflow(
+	ctx context.Context,
 	mutableState execution.MutableState,
 	eventBatchFirstEventID int64,
 	parentDomainName string,
-	continueAsNewAttributes *workflow.ContinueAsNewWorkflowExecutionDecisionAttributes,
+	continueAsNewAttributes *types.ContinueAsNewWorkflowExecutionDecisionAttributes,
 ) (execution.MutableState, error) {
 
 	if decision, ok := mutableState.GetInFlightDecision(); ok {
 		if err := execution.FailDecision(
 			mutableState,
 			decision,
-			workflow.DecisionTaskFailedCauseForceCloseDecision,
+			types.DecisionTaskFailedCauseForceCloseDecision,
 		); err != nil {
 			return nil, err
 		}
 	}
 
 	_, newMutableState, err := mutableState.AddContinueAsNewEvent(
+		ctx,
 		eventBatchFirstEventID,
 		common.EmptyEventID,
 		parentDomainName,
@@ -344,4 +370,33 @@ func retryWorkflow(
 		return nil, err
 	}
 	return newMutableState, nil
+}
+
+func getWorkflowExecution(
+	taskInfo Info,
+) types.WorkflowExecution {
+
+	return types.WorkflowExecution{
+		WorkflowID: taskInfo.GetWorkflowID(),
+		RunID:      taskInfo.GetRunID(),
+	}
+}
+
+// NewMockTaskMatcher creates a gomock matcher for mock Task
+func NewMockTaskMatcher(mockTask *MockTask) gomock.Matcher {
+	return &mockTaskMatcher{
+		task: mockTask,
+	}
+}
+
+func (m *mockTaskMatcher) Matches(x interface{}) bool {
+	taskPtr, ok := x.(*MockTask)
+	if !ok {
+		return false
+	}
+	return taskPtr == m.task
+}
+
+func (m *mockTaskMatcher) String() string {
+	return fmt.Sprintf("is equal to %v", m.task)
 }

@@ -26,9 +26,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/urfave/cli"
 
-	"github.com/uber/cadence/.gen/go/admin"
-	"github.com/uber/cadence/.gen/go/shared"
-	"github.com/uber/cadence/common"
+	"github.com/uber/cadence/common/types"
 )
 
 // AdminAddSearchAttribute to whitelist search attribute
@@ -47,11 +45,11 @@ func AdminAddSearchAttribute(c *cli.Context) {
 	adminClient := cFactory.ServerAdminClient(c)
 	ctx, cancel := newContext(c)
 	defer cancel()
-	request := &admin.AddSearchAttributeRequest{
-		SearchAttribute: map[string]shared.IndexedValueType{
-			key: shared.IndexedValueType(valType),
+	request := &types.AddSearchAttributeRequest{
+		SearchAttribute: map[string]types.IndexedValueType{
+			key: types.IndexedValueType(valType),
 		},
-		SecurityToken: common.StringPtr(c.String(FlagSecurityToken)),
+		SecurityToken: c.String(FlagSecurityToken),
 	}
 
 	err := adminClient.AddSearchAttribute(ctx, request)

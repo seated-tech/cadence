@@ -12,15 +12,19 @@ persistence:
     {{- end }}
     datastores:
         {{- $db := default .Env.DB "cassandra" | lower -}}
-        {{- if eq $db "cassandra" }}
+        {{- if or (eq $db "cassandra") (eq $db "scylla") }}
         default:
             cassandra:
                 hosts: {{ default .Env.CASSANDRA_SEEDS "" }}
                 keyspace: {{ default .Env.KEYSPACE "cadence" }}
+                user: {{ default .Env.CASSANDRA_USER "" }}
+                password: {{ default .Env.CASSANDRA_PASSWORD "" }}
         visibility:
             cassandra:
                 hosts: {{ default .Env.CASSANDRA_SEEDS "" }}
                 keyspace: {{ default .Env.VISIBILITY_KEYSPACE "cadence_visibility" }}
+                user: {{ default .Env.CASSANDRA_USER "" }}
+                password: {{ default .Env.CASSANDRA_PASSWORD "" }}
         {{- else if eq $db "mysql" }}
         default:
             sql:
@@ -50,6 +54,8 @@ persistence:
         default:
             sql:
                 pluginName: "postgres"
+                encodingType: "thriftrw"
+                decodingTypes: ["thriftrw"]
                 databaseName: {{ default .Env.DBNAME "cadence" }}
                 connectAddr: "{{ default .Env.POSTGRES_SEEDS "" }}:{{ default .Env.DB_PORT "5432" }}"
                 connectProtocol: "tcp"
@@ -61,6 +67,8 @@ persistence:
         visibility:
             sql:
                 pluginName: "postgres"
+                encodingType: "thriftrw"
+                decodingTypes: ["thriftrw"]
                 databaseName: {{ default .Env.VISIBILITY_DBNAME "cadence_visibility" }}
                 connectAddr: "{{ default .Env.POSTGRES_SEEDS "" }}:{{ default .Env.DB_PORT "5432" }}"
                 connectProtocol: "tcp"
@@ -73,6 +81,9 @@ persistence:
         {{- if eq $es "true" }}
         es-visibility:
             elasticsearch:
+                version: {{ default .Env.ES_VERSION "" }}
+                username: {{ default .Env.ES_USER "" }}
+                password: {{ default .Env.ES_PWD "" }}
                 url:
                     scheme: "http"
                     host: "{{ default .Env.ES_SEEDS "" }}:9200"
@@ -106,12 +117,17 @@ services:
         metrics:
             statsd:
                 hostPort: {{ .Env.STATSD_ENDPOINT }}
-                prefix: "cadence-frontend"
+                prefix: {{ default .Env.STATSD_FRONTEND_PREFIX "cadence-frontend" }}
         {{- else if .Env.PROMETHEUS_ENDPOINT }}
         metrics:
             prometheus:
                 timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
                 listenAddress: {{ .Env.PROMETHEUS_ENDPOINT }}
+        {{- else if .Env.PROMETHEUS_ENDPOINT_0 }}
+        metrics:
+            prometheus:
+                timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
+                listenAddress: {{ .Env.PROMETHEUS_ENDPOINT_0 }}
         {{- end }}
 
     matching:
@@ -122,12 +138,17 @@ services:
         metrics:
             statsd:
                 hostPort: {{ .Env.STATSD_ENDPOINT }}
-                prefix: "cadence-matching"
+                prefix: {{ default .Env.STATSD_MATCHING_PREFIX "cadence-matching" }}
         {{- else if .Env.PROMETHEUS_ENDPOINT }}
         metrics:
             prometheus:
                 timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
                 listenAddress: {{ .Env.PROMETHEUS_ENDPOINT }}
+        {{- else if .Env.PROMETHEUS_ENDPOINT_1 }}
+        metrics:
+            prometheus:
+                timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
+                listenAddress: {{ .Env.PROMETHEUS_ENDPOINT_1 }}
         {{- end }}
 
     history:
@@ -138,12 +159,17 @@ services:
         metrics:
             statsd:
                 hostPort: {{ .Env.STATSD_ENDPOINT }}
-                prefix: "cadence-history"
+                prefix: {{ default .Env.STATSD_HISTORY_PREFIX "cadence-history" }}
         {{- else if .Env.PROMETHEUS_ENDPOINT }}
         metrics:
             prometheus:
                 timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
                 listenAddress: {{ .Env.PROMETHEUS_ENDPOINT }}
+        {{- else if .Env.PROMETHEUS_ENDPOINT_2 }}
+        metrics:
+            prometheus:
+                timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
+                listenAddress: {{ .Env.PROMETHEUS_ENDPOINT_2 }}
         {{- end }}
 
     worker:
@@ -154,40 +180,57 @@ services:
         metrics:
             statsd:
                 hostPort: {{ .Env.STATSD_ENDPOINT }}
-                prefix: "cadence-worker"
+                prefix: {{ default .Env.STATSD_WORKER_PREFIX "cadence-worker" }}
         {{- else if .Env.PROMETHEUS_ENDPOINT }}
         metrics:
             prometheus:
                 timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
                 listenAddress: {{ .Env.PROMETHEUS_ENDPOINT }}
+        {{- else if .Env.PROMETHEUS_ENDPOINT_3 }}
+        metrics:
+            prometheus:
+                timerType: {{ default .Env.PROMETHEUS_TIMER_TYPE "histogram" }}
+                listenAddress: {{ .Env.PROMETHEUS_ENDPOINT_3 }}
         {{- end }}
 
 clusterMetadata:
-    enableGlobalDomain: false
+    enableGlobalDomain: {{ default .Env.ENABLE_GLOBAL_DOMAIN "false" }}
     failoverVersionIncrement: 10
-    masterClusterName: "active"
-    currentClusterName: "active"
+    masterClusterName: "primary"
+    {{- if .Env.IS_NOT_PRIMARY }}
+    currentClusterName: "secondary"
+    {{- else }}
+    currentClusterName: "primary"
+    {{- end }}
     clusterInformation:
-        active:
+        primary:
             enabled: true
             initialFailoverVersion: 0
             rpcName: "cadence-frontend"
-            rpcAddress: "127.0.0.1:7933"
+            rpcAddress: {{ default .Env.PRIMARY_SEEDS "cadence" }}:7933
+        {{- if .Env.ENABLE_GLOBAL_DOMAIN }}
+        secondary:
+            enabled: true
+            initialFailoverVersion: 2
+            rpcName: "cadence-frontend"
+            rpcAddress: {{ default .Env.SECONDARY_SEEDS "cadence-secondary" }}:7933
+        {{- end }}
+
 
 dcRedirectionPolicy:
-    policy: "noop"
+    policy: {{ default .Env.DC_REDIRECT_POLICY "selected-apis-forwarding" }}
     toDC: ""
 
 archival:
   history:
-    status: "enabled"
-    enableRead: true
+    status: {{ default .Env.HISTORY_ARCHIVAL_STATUS "disabled" }}
+    enableRead: {{ default .Env.HISTORY_ARCHIVAL_ENABLE_READ "false" }}
     provider:
         s3store:
             region: "us-east-1"
   visibility:
-    status: "enabled"
-    enableRead: true
+    status: {{ default .Env.VISIBILITY_ARCHIVAL_STATUS "disabled" }}
+    enableRead: {{ default .Env.VISIBILITY_ARCHIVAL_ENABLE_READ "false" }}
     provider:
         s3store:
             region: "us-east-1"
@@ -195,11 +238,11 @@ archival:
 domainDefaults:
   archival:
     history:
-      status: "enabled"
-      URI: {{ .Env.S3_ARCHIVAL_URI }}
+      status: {{ default .Env.DOMAIN_DEFAULTS_HISTORY_ARCHIVAL_STATUS "disabled" }}
+      URI: {{ default .Env.DOMAIN_DEFAULTS_HISTORY_ARCHIVAL_URI "" }}
     visibility:
-      status: "enabled"
-      URI: {{ .Env.S3_ARCHIVAL_URI }}
+      status: {{ default .Env.DOMAIN_DEFAULTS_VISIBILITY_ARCHIVAL_STATUS "disabled" }}
+      URI: {{ default .Env.DOMAIN_DEFAULTS_VISIBILITY_ARCHIVAL_URI "" }}
 
 kafka:
     tls:
@@ -222,9 +265,9 @@ publicClient:
     hostPort: {{ default .Env.BIND_ON_IP "127.0.0.1" }}:7933
 
 dynamicConfigClient:
-    filepath: {{ default .Env.DYNAMIC_CONFIG_FILE_PATH "/etc/cadence/config/dynamicconfig" }}
+    filepath: {{ default .Env.DYNAMIC_CONFIG_FILE_PATH "/etc/cadence/config/dynamicconfig/development.yaml" }}
     pollInterval: "60s"
 
 blobstore:
   filestore:
-    outputDirectory: "/tmp/blobstore"
+    outputDirectory: {{ default .Env.FILE_BLOB_STORE_OUTPUT_DIRECTYORY "" }}

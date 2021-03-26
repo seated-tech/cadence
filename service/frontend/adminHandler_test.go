@@ -32,14 +32,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/uber/cadence/.gen/go/admin"
-	"github.com/uber/cadence/.gen/go/history"
-	"github.com/uber/cadence/.gen/go/history/historyservicetest"
-	"github.com/uber/cadence/.gen/go/shared"
+	"github.com/uber/cadence/client/history"
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/definition"
-	"github.com/uber/cadence/common/elasticsearch"
 	esmock "github.com/uber/cadence/common/elasticsearch/mocks"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/mocks"
@@ -48,6 +44,7 @@ import (
 	"github.com/uber/cadence/common/service"
 	"github.com/uber/cadence/common/service/config"
 	"github.com/uber/cadence/common/service/dynamicconfig"
+	"github.com/uber/cadence/common/types"
 )
 
 type (
@@ -57,7 +54,7 @@ type (
 
 		controller        *gomock.Controller
 		mockResource      *resource.Test
-		mockHistoryClient *historyservicetest.MockClient
+		mockHistoryClient *history.MockClient
 		mockDomainCache   *cache.MockDomainCache
 
 		mockHistoryV2Mgr *mocks.HistoryV2Manager
@@ -65,7 +62,7 @@ type (
 		domainName string
 		domainID   string
 
-		handler *AdminHandler
+		handler *adminHandlerImpl
 	}
 )
 
@@ -92,9 +89,8 @@ func (s *adminHandlerSuite) SetupTest() {
 		},
 	}
 	config := &Config{
-		EnableAdminProtection:        dynamicconfig.GetBoolPropertyFn(false),
-		EnableCleanupReplicationTask: dynamicconfig.GetBoolPropertyFn(false),
-		EnableGracefulFailover:       dynamicconfig.GetBoolPropertyFn(false),
+		EnableAdminProtection:  dynamicconfig.GetBoolPropertyFn(false),
+		EnableGracefulFailover: dynamicconfig.GetBoolPropertyFn(false),
 	}
 	s.handler = NewAdminHandler(s.mockResource, params, config)
 	s.handler.Start()
@@ -108,35 +104,35 @@ func (s *adminHandlerSuite) TearDownTest() {
 
 func (s *adminHandlerSuite) Test_ConvertIndexedValueTypeToESDataType() {
 	tests := []struct {
-		input    shared.IndexedValueType
+		input    types.IndexedValueType
 		expected string
 	}{
 		{
-			input:    shared.IndexedValueTypeString,
+			input:    types.IndexedValueTypeString,
 			expected: "text",
 		},
 		{
-			input:    shared.IndexedValueTypeKeyword,
+			input:    types.IndexedValueTypeKeyword,
 			expected: "keyword",
 		},
 		{
-			input:    shared.IndexedValueTypeInt,
+			input:    types.IndexedValueTypeInt,
 			expected: "long",
 		},
 		{
-			input:    shared.IndexedValueTypeDouble,
+			input:    types.IndexedValueTypeDouble,
 			expected: "double",
 		},
 		{
-			input:    shared.IndexedValueTypeBool,
+			input:    types.IndexedValueTypeBool,
 			expected: "boolean",
 		},
 		{
-			input:    shared.IndexedValueTypeDatetime,
+			input:    types.IndexedValueTypeDatetime,
 			expected: "date",
 		},
 		{
-			input:    shared.IndexedValueType(-1),
+			input:    types.IndexedValueType(-1),
 			expected: "",
 		},
 	}
@@ -150,17 +146,17 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnInvali
 
 	ctx := context.Background()
 	_, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr(""),
-				RunId:      common.StringPtr(uuid.New()),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "",
+				RunID:      uuid.New(),
 			},
-			StartEventId:      common.Int64Ptr(1),
+			StartEventID:      common.Int64Ptr(1),
 			StartEventVersion: common.Int64Ptr(100),
-			EndEventId:        common.Int64Ptr(10),
+			EndEventID:        common.Int64Ptr(10),
 			EndEventVersion:   common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(1),
+			MaximumPageSize:   1,
 			NextPageToken:     nil,
 		})
 	s.Error(err)
@@ -169,17 +165,17 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnInvali
 func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnInvalidRunID() {
 	ctx := context.Background()
 	_, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr("workflowID"),
-				RunId:      common.StringPtr("runID"),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "workflowID",
+				RunID:      "runID",
 			},
-			StartEventId:      common.Int64Ptr(1),
+			StartEventID:      common.Int64Ptr(1),
 			StartEventVersion: common.Int64Ptr(100),
-			EndEventId:        common.Int64Ptr(10),
+			EndEventID:        common.Int64Ptr(10),
 			EndEventVersion:   common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(1),
+			MaximumPageSize:   1,
 			NextPageToken:     nil,
 		})
 	s.Error(err)
@@ -188,17 +184,17 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnInvali
 func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnInvalidSize() {
 	ctx := context.Background()
 	_, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr("workflowID"),
-				RunId:      common.StringPtr(uuid.New()),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "workflowID",
+				RunID:      uuid.New(),
 			},
-			StartEventId:      common.Int64Ptr(1),
+			StartEventID:      common.Int64Ptr(1),
 			StartEventVersion: common.Int64Ptr(100),
-			EndEventId:        common.Int64Ptr(10),
+			EndEventID:        common.Int64Ptr(10),
 			EndEventVersion:   common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(-1),
+			MaximumPageSize:   -1,
 			NextPageToken:     nil,
 		})
 	s.Error(err)
@@ -208,17 +204,17 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_FailedOnDomain
 	ctx := context.Background()
 	s.mockDomainCache.EXPECT().GetDomainID(s.domainName).Return("", fmt.Errorf("test")).Times(1)
 	_, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr("workflowID"),
-				RunId:      common.StringPtr(uuid.New()),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "workflowID",
+				RunID:      uuid.New(),
 			},
-			StartEventId:      common.Int64Ptr(1),
+			StartEventID:      common.Int64Ptr(1),
 			StartEventVersion: common.Int64Ptr(100),
-			EndEventId:        common.Int64Ptr(10),
+			EndEventID:        common.Int64Ptr(10),
 			EndEventVersion:   common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(1),
+			MaximumPageSize:   1,
 			NextPageToken:     nil,
 		})
 	s.Error(err)
@@ -232,32 +228,31 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2() {
 		persistence.NewVersionHistoryItem(int64(10), int64(100)),
 	})
 	rawVersionHistories := persistence.NewVersionHistories(versionHistory)
-	versionHistories := rawVersionHistories.ToThrift()
-	mState := &history.GetMutableStateResponse{
-		NextEventId:        common.Int64Ptr(11),
+	versionHistories := rawVersionHistories.ToInternalType()
+	mState := &types.GetMutableStateResponse{
+		NextEventID:        11,
 		CurrentBranchToken: branchToken,
 		VersionHistories:   versionHistories,
-		ReplicationInfo:    make(map[string]*shared.ReplicationInfo),
 	}
 	s.mockHistoryClient.EXPECT().GetMutableState(gomock.Any(), gomock.Any()).Return(mState, nil).AnyTimes()
 
-	s.mockHistoryV2Mgr.On("ReadRawHistoryBranch", mock.Anything).Return(&persistence.ReadRawHistoryBranchResponse{
+	s.mockHistoryV2Mgr.On("ReadRawHistoryBranch", mock.Anything, mock.Anything).Return(&persistence.ReadRawHistoryBranchResponse{
 		HistoryEventBlobs: []*persistence.DataBlob{},
 		NextPageToken:     []byte{},
 		Size:              0,
 	}, nil)
 	_, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr("workflowID"),
-				RunId:      common.StringPtr(uuid.New()),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "workflowID",
+				RunID:      uuid.New(),
 			},
-			StartEventId:      common.Int64Ptr(1),
+			StartEventID:      common.Int64Ptr(1),
 			StartEventVersion: common.Int64Ptr(100),
-			EndEventId:        common.Int64Ptr(10),
+			EndEventID:        common.Int64Ptr(10),
 			EndEventVersion:   common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(10),
+			MaximumPageSize:   10,
 			NextPageToken:     nil,
 		})
 	s.NoError(err)
@@ -271,25 +266,24 @@ func (s *adminHandlerSuite) Test_GetWorkflowExecutionRawHistoryV2_SameStartIDAnd
 		persistence.NewVersionHistoryItem(int64(10), int64(100)),
 	})
 	rawVersionHistories := persistence.NewVersionHistories(versionHistory)
-	versionHistories := rawVersionHistories.ToThrift()
-	mState := &history.GetMutableStateResponse{
-		NextEventId:        common.Int64Ptr(11),
+	versionHistories := rawVersionHistories.ToInternalType()
+	mState := &types.GetMutableStateResponse{
+		NextEventID:        11,
 		CurrentBranchToken: branchToken,
 		VersionHistories:   versionHistories,
-		ReplicationInfo:    make(map[string]*shared.ReplicationInfo),
 	}
 	s.mockHistoryClient.EXPECT().GetMutableState(gomock.Any(), gomock.Any()).Return(mState, nil).AnyTimes()
 
 	resp, err := s.handler.GetWorkflowExecutionRawHistoryV2(ctx,
-		&admin.GetWorkflowExecutionRawHistoryV2Request{
-			Domain: common.StringPtr(s.domainName),
-			Execution: &shared.WorkflowExecution{
-				WorkflowId: common.StringPtr("workflowID"),
-				RunId:      common.StringPtr(uuid.New()),
+		&types.GetWorkflowExecutionRawHistoryV2Request{
+			Domain: s.domainName,
+			Execution: &types.WorkflowExecution{
+				WorkflowID: "workflowID",
+				RunID:      uuid.New(),
 			},
-			StartEventId:      common.Int64Ptr(10),
+			StartEventID:      common.Int64Ptr(10),
 			StartEventVersion: common.Int64Ptr(100),
-			MaximumPageSize:   common.Int32Ptr(1),
+			MaximumPageSize:   1,
 			NextPageToken:     nil,
 		})
 	s.Nil(resp.NextPageToken)
@@ -305,17 +299,17 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 	endItem := persistence.NewVersionHistoryItem(inputEndEventID, inputEndVersion)
 	versionHistory := persistence.NewVersionHistory([]byte{}, []*persistence.VersionHistoryItem{firstItem, endItem})
 	versionHistories := persistence.NewVersionHistories(versionHistory)
-	request := &admin.GetWorkflowExecutionRawHistoryV2Request{
-		Domain: common.StringPtr(s.domainName),
-		Execution: &shared.WorkflowExecution{
-			WorkflowId: common.StringPtr("workflowID"),
-			RunId:      common.StringPtr(uuid.New()),
+	request := &types.GetWorkflowExecutionRawHistoryV2Request{
+		Domain: s.domainName,
+		Execution: &types.WorkflowExecution{
+			WorkflowID: "workflowID",
+			RunID:      uuid.New(),
 		},
-		StartEventId:      common.Int64Ptr(inputStartEventID),
+		StartEventID:      common.Int64Ptr(inputStartEventID),
 		StartEventVersion: common.Int64Ptr(inputStartVersion),
-		EndEventId:        common.Int64Ptr(inputEndEventID),
+		EndEventID:        common.Int64Ptr(inputEndEventID),
 		EndEventVersion:   common.Int64Ptr(inputEndVersion),
-		MaximumPageSize:   common.Int32Ptr(10),
+		MaximumPageSize:   10,
 		NextPageToken:     nil,
 	}
 
@@ -323,8 +317,8 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 		request,
 		versionHistories,
 	)
-	s.Equal(request.GetStartEventId(), inputStartEventID)
-	s.Equal(request.GetEndEventId(), inputEndEventID)
+	s.Equal(request.GetStartEventID(), inputStartEventID)
+	s.Equal(request.GetEndEventID(), inputEndEventID)
 	s.Equal(targetVersionHistory, versionHistory)
 	s.NoError(err)
 }
@@ -338,17 +332,17 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 	targetItem := persistence.NewVersionHistoryItem(inputEndEventID, inputEndVersion)
 	versionHistory := persistence.NewVersionHistory([]byte{}, []*persistence.VersionHistoryItem{firstItem, targetItem})
 	versionHistories := persistence.NewVersionHistories(versionHistory)
-	request := &admin.GetWorkflowExecutionRawHistoryV2Request{
-		Domain: common.StringPtr(s.domainName),
-		Execution: &shared.WorkflowExecution{
-			WorkflowId: common.StringPtr("workflowID"),
-			RunId:      common.StringPtr(uuid.New()),
+	request := &types.GetWorkflowExecutionRawHistoryV2Request{
+		Domain: s.domainName,
+		Execution: &types.WorkflowExecution{
+			WorkflowID: "workflowID",
+			RunID:      uuid.New(),
 		},
-		StartEventId:      nil,
+		StartEventID:      nil,
 		StartEventVersion: nil,
-		EndEventId:        common.Int64Ptr(inputEndEventID),
+		EndEventID:        common.Int64Ptr(inputEndEventID),
 		EndEventVersion:   common.Int64Ptr(inputEndVersion),
-		MaximumPageSize:   common.Int32Ptr(10),
+		MaximumPageSize:   10,
 		NextPageToken:     nil,
 	}
 
@@ -356,8 +350,8 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 		request,
 		versionHistories,
 	)
-	s.Equal(request.GetStartEventId(), inputStartEventID-1)
-	s.Equal(request.GetEndEventId(), inputEndEventID)
+	s.Equal(request.GetStartEventID(), inputStartEventID-1)
+	s.Equal(request.GetEndEventID(), inputEndEventID)
 	s.Equal(targetVersionHistory, versionHistory)
 	s.NoError(err)
 }
@@ -371,17 +365,17 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 	targetItem := persistence.NewVersionHistoryItem(inputEndEventID, inputEndVersion)
 	versionHistory := persistence.NewVersionHistory([]byte{}, []*persistence.VersionHistoryItem{firstItem, targetItem})
 	versionHistories := persistence.NewVersionHistories(versionHistory)
-	request := &admin.GetWorkflowExecutionRawHistoryV2Request{
-		Domain: common.StringPtr(s.domainName),
-		Execution: &shared.WorkflowExecution{
-			WorkflowId: common.StringPtr("workflowID"),
-			RunId:      common.StringPtr(uuid.New()),
+	request := &types.GetWorkflowExecutionRawHistoryV2Request{
+		Domain: s.domainName,
+		Execution: &types.WorkflowExecution{
+			WorkflowID: "workflowID",
+			RunID:      uuid.New(),
 		},
-		StartEventId:      common.Int64Ptr(inputStartEventID),
+		StartEventID:      common.Int64Ptr(inputStartEventID),
 		StartEventVersion: common.Int64Ptr(inputStartVersion),
-		EndEventId:        nil,
+		EndEventID:        nil,
 		EndEventVersion:   nil,
-		MaximumPageSize:   common.Int32Ptr(10),
+		MaximumPageSize:   10,
 		NextPageToken:     nil,
 	}
 
@@ -389,8 +383,8 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 		request,
 		versionHistories,
 	)
-	s.Equal(request.GetStartEventId(), inputStartEventID)
-	s.Equal(request.GetEndEventId(), inputEndEventID+1)
+	s.Equal(request.GetStartEventID(), inputStartEventID)
+	s.Equal(request.GetEndEventID(), inputEndEventID+1)
 	s.Equal(targetVersionHistory, versionHistory)
 	s.NoError(err)
 }
@@ -409,17 +403,17 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 	versionHistories := persistence.NewVersionHistories(versionHistory1)
 	_, _, err := versionHistories.AddVersionHistory(versionHistory2)
 	s.NoError(err)
-	request := &admin.GetWorkflowExecutionRawHistoryV2Request{
-		Domain: common.StringPtr(s.domainName),
-		Execution: &shared.WorkflowExecution{
-			WorkflowId: common.StringPtr("workflowID"),
-			RunId:      common.StringPtr(uuid.New()),
+	request := &types.GetWorkflowExecutionRawHistoryV2Request{
+		Domain: s.domainName,
+		Execution: &types.WorkflowExecution{
+			WorkflowID: "workflowID",
+			RunID:      uuid.New(),
 		},
-		StartEventId:      common.Int64Ptr(9),
+		StartEventID:      common.Int64Ptr(9),
 		StartEventVersion: common.Int64Ptr(20),
-		EndEventId:        common.Int64Ptr(inputEndEventID),
+		EndEventID:        common.Int64Ptr(inputEndEventID),
 		EndEventVersion:   common.Int64Ptr(inputEndVersion),
-		MaximumPageSize:   common.Int32Ptr(10),
+		MaximumPageSize:   10,
 		NextPageToken:     nil,
 	}
 
@@ -427,8 +421,8 @@ func (s *adminHandlerSuite) Test_SetRequestDefaultValueAndGetTargetVersionHistor
 		request,
 		versionHistories,
 	)
-	s.Equal(request.GetStartEventId(), inputStartEventID)
-	s.Equal(request.GetEndEventId(), inputEndEventID)
+	s.Equal(request.GetStartEventID(), inputStartEventID)
+	s.Equal(request.GetEndEventID(), inputEndEventID)
 	s.Equal(targetVersionHistory, versionHistory1)
 	s.NoError(err)
 }
@@ -440,7 +434,7 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 
 	type test struct {
 		Name     string
-		Request  *admin.AddSearchAttributeRequest
+		Request  *types.AddSearchAttributeRequest
 		Expected error
 	}
 	// request validation tests
@@ -448,21 +442,21 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 		{
 			Name:     "nil request",
 			Request:  nil,
-			Expected: &shared.BadRequestError{Message: "Request is nil."},
+			Expected: &types.BadRequestError{Message: "Request is nil."},
 		},
 		{
 			Name:     "empty request",
-			Request:  &admin.AddSearchAttributeRequest{},
-			Expected: &shared.BadRequestError{Message: "SearchAttributes are not provided"},
+			Request:  &types.AddSearchAttributeRequest{},
+			Expected: &types.BadRequestError{Message: "SearchAttributes are not provided"},
 		},
 		{
 			Name: "no advanced config",
-			Request: &admin.AddSearchAttributeRequest{
-				SearchAttribute: map[string]shared.IndexedValueType{
+			Request: &types.AddSearchAttributeRequest{
+				SearchAttribute: map[string]types.IndexedValueType{
 					"CustomKeywordField": 1,
 				},
 			},
-			Expected: &shared.BadRequestError{Message: "AdvancedVisibilityStore is not configured for this Cadence Cluster"},
+			Expected: &types.BadRequestError{Message: "AdvancedVisibilityStore is not configured for this Cadence Cluster"},
 		},
 	}
 	for _, testCase := range testCases1 {
@@ -472,13 +466,14 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 	dynamicConfig := dynamicconfig.NewMockClient(s.controller)
 	handler.params.DynamicConfig = dynamicConfig
 	// add advanced visibility store related config
-	handler.params.ESConfig = &elasticsearch.Config{}
-	esClient := &esmock.Client{}
+	handler.params.ESConfig = &config.ElasticSearchConfig{}
+	esClient := &esmock.GenericClient{}
 	defer func() { esClient.AssertExpectations(s.T()) }()
 	handler.params.ESClient = esClient
+	handler.esClient = esClient
 
 	mockValidAttr := map[string]interface{}{
-		"testkey": shared.IndexedValueTypeKeyword,
+		"testkey": types.IndexedValueTypeKeyword,
 	}
 	dynamicConfig.EXPECT().GetMapValue(dynamicconfig.ValidSearchAttributes, nil, definition.GetDefaultIndexedKeys()).
 		Return(mockValidAttr, nil).AnyTimes()
@@ -486,21 +481,21 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 	testCases2 := []test{
 		{
 			Name: "reserved key",
-			Request: &admin.AddSearchAttributeRequest{
-				SearchAttribute: map[string]shared.IndexedValueType{
+			Request: &types.AddSearchAttributeRequest{
+				SearchAttribute: map[string]types.IndexedValueType{
 					"WorkflowID": 1,
 				},
 			},
-			Expected: &shared.BadRequestError{Message: "Key [WorkflowID] is reserved by system"},
+			Expected: &types.BadRequestError{Message: "Key [WorkflowID] is reserved by system"},
 		},
 		{
 			Name: "key already whitelisted",
-			Request: &admin.AddSearchAttributeRequest{
-				SearchAttribute: map[string]shared.IndexedValueType{
+			Request: &types.AddSearchAttributeRequest{
+				SearchAttribute: map[string]types.IndexedValueType{
 					"testkey": 1,
 				},
 			},
-			Expected: &shared.BadRequestError{Message: "Key [testkey] is already whitelist"},
+			Expected: &types.BadRequestError{Message: "Key [testkey] is already whitelist"},
 		},
 	}
 	for _, testCase := range testCases2 {
@@ -509,15 +504,15 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 
 	dcUpdateTest := test{
 		Name: "dynamic config update failed",
-		Request: &admin.AddSearchAttributeRequest{
-			SearchAttribute: map[string]shared.IndexedValueType{
+		Request: &types.AddSearchAttributeRequest{
+			SearchAttribute: map[string]types.IndexedValueType{
 				"testkey2": 1,
 			},
 		},
-		Expected: &shared.InternalServiceError{Message: "Failed to update dynamic config, err: error"},
+		Expected: &types.InternalServiceError{Message: "Failed to update dynamic config, err: error"},
 	}
 	dynamicConfig.EXPECT().UpdateValue(dynamicconfig.ValidSearchAttributes, map[string]interface{}{
-		"testkey":  shared.IndexedValueTypeKeyword,
+		"testkey":  types.IndexedValueTypeKeyword,
 		"testkey2": 1,
 	}).Return(errors.New("error"))
 	s.Equal(dcUpdateTest.Expected, handler.AddSearchAttribute(ctx, dcUpdateTest.Request))
@@ -527,25 +522,26 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Validate() {
 
 	convertFailedTest := test{
 		Name: "unknown value type",
-		Request: &admin.AddSearchAttributeRequest{
-			SearchAttribute: map[string]shared.IndexedValueType{
+		Request: &types.AddSearchAttributeRequest{
+			SearchAttribute: map[string]types.IndexedValueType{
 				"testkey3": -1,
 			},
 		},
-		Expected: &shared.BadRequestError{Message: "Unknown value type, IndexedValueType(-1)"},
+		Expected: &types.BadRequestError{Message: "Unknown value type, IndexedValueType(-1)"},
 	}
 	s.Equal(convertFailedTest.Expected, handler.AddSearchAttribute(ctx, convertFailedTest.Request))
 
 	esClient.On("PutMapping", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(errors.New("error"))
+	esClient.On("IsNotFoundError", mock.Anything).Return(false)
 	esErrorTest := test{
 		Name: "es error",
-		Request: &admin.AddSearchAttributeRequest{
-			SearchAttribute: map[string]shared.IndexedValueType{
+		Request: &types.AddSearchAttributeRequest{
+			SearchAttribute: map[string]types.IndexedValueType{
 				"testkey4": 1,
 			},
 		},
-		Expected: &shared.InternalServiceError{Message: "Failed to update ES mapping, err: error"},
+		Expected: &types.InternalServiceError{Message: "Failed to update ES mapping, err: error"},
 	}
 	s.Equal(esErrorTest.Expected, handler.AddSearchAttribute(ctx, esErrorTest.Request))
 }
@@ -554,30 +550,29 @@ func (s *adminHandlerSuite) Test_AddSearchAttribute_Permission() {
 	ctx := context.Background()
 	handler := s.handler
 	handler.config = &Config{
-		EnableAdminProtection:        dynamicconfig.GetBoolPropertyFn(true),
-		AdminOperationToken:          dynamicconfig.GetStringPropertyFn(common.DefaultAdminOperationToken),
-		EnableCleanupReplicationTask: dynamicconfig.GetBoolPropertyFn(false),
+		EnableAdminProtection: dynamicconfig.GetBoolPropertyFn(true),
+		AdminOperationToken:   dynamicconfig.GetStringPropertyFn(common.DefaultAdminOperationToken),
 	}
 
 	type test struct {
 		Name     string
-		Request  *admin.AddSearchAttributeRequest
+		Request  *types.AddSearchAttributeRequest
 		Expected error
 	}
 	testCases := []test{
 		{
 			Name: "unknown token",
-			Request: &admin.AddSearchAttributeRequest{
-				SecurityToken: common.StringPtr("unknown"),
+			Request: &types.AddSearchAttributeRequest{
+				SecurityToken: "unknown",
 			},
 			Expected: errNoPermission,
 		},
 		{
 			Name: "correct token",
-			Request: &admin.AddSearchAttributeRequest{
-				SecurityToken: common.StringPtr(common.DefaultAdminOperationToken),
+			Request: &types.AddSearchAttributeRequest{
+				SecurityToken: common.DefaultAdminOperationToken,
 			},
-			Expected: &shared.BadRequestError{Message: "SearchAttributes are not provided"},
+			Expected: &types.BadRequestError{Message: "SearchAttributes are not provided"},
 		},
 	}
 	for _, testCase := range testCases {

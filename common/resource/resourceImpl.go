@@ -42,6 +42,7 @@ import (
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/cluster"
+	"github.com/uber/cadence/common/domain"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/loggerimpl"
 	"github.com/uber/cadence/common/log/tag"
@@ -87,6 +88,7 @@ type (
 		blobstoreClient         blobstore.Client
 		archivalMetadata        archiver.ArchivalMetadata
 		archiverProvider        provider.ArchiverProvider
+		domainReplicationQueue  domain.ReplicationQueue
 
 		// membership infos
 
@@ -141,7 +143,7 @@ func New(
 	visibilityManagerInitializer VisibilityManagerInitializer,
 ) (impl *Impl, retError error) {
 
-	logger := params.Logger.WithTags(tag.Service(serviceName))
+	logger := params.Logger
 	throttledLogger := loggerimpl.NewThrottledLogger(logger, throttledLoggerMaxRPS)
 
 	numShards := params.PersistenceConfig.NumHistoryShards
@@ -157,7 +159,11 @@ func New(
 		return nil, err
 	}
 
-	dynamicCollection := dynamicconfig.NewCollection(params.DynamicConfig, logger)
+	dynamicCollection := dynamicconfig.NewCollection(
+		params.DynamicConfig,
+		logger,
+		dynamicconfig.ClusterNameFilter(params.ClusterMetadata.GetCurrentClusterName()),
+	)
 	clientBean, err := client.NewClientBean(
 		client.NewRPCClientFactory(
 			params.RPCFactory,
@@ -206,7 +212,6 @@ func New(
 			}
 			return persistenceMaxQPS()
 		},
-		params.AbstractDatastoreFactory,
 		params.ClusterMetadata.GetCurrentClusterName(),
 		params.MetricsClient,
 		logger,
@@ -230,6 +235,12 @@ func New(
 	)
 
 	domainMetricsScopeCache := cache.NewDomainMetricsScopeCache()
+	domainReplicationQueue := domain.NewReplicationQueue(
+		persistenceBean.GetDomainReplicationQueueManager(),
+		params.ClusterMetadata.GetCurrentClusterName(),
+		params.MetricsClient,
+		logger,
+	)
 
 	frontendRawClient := clientBean.GetFrontendClient()
 	frontendClient := frontend.NewRetryableClient(
@@ -298,6 +309,7 @@ func New(
 		blobstoreClient:         params.BlobstoreClient,
 		archivalMetadata:        params.ArchivalMetadata,
 		archiverProvider:        params.ArchiverProvider,
+		domainReplicationQueue:  domainReplicationQueue,
 
 		// membership infos
 
@@ -367,6 +379,7 @@ func (h *Impl) Start() {
 	}
 	h.membershipMonitor.Start()
 	h.domainCache.Start()
+	h.domainMetricsScopeCache.Start()
 
 	hostInfo, err := h.membershipMonitor.WhoAmI()
 	if err != nil {
@@ -392,6 +405,7 @@ func (h *Impl) Stop() {
 	}
 
 	h.domainCache.Stop()
+	h.domainMetricsScopeCache.Stop()
 	h.membershipMonitor.Stop()
 	if err := h.dispatcher.Stop(); err != nil {
 		h.logger.WithTags(tag.Error(err)).Error("failed to stop dispatcher")
@@ -466,6 +480,11 @@ func (h *Impl) GetArchivalMetadata() archiver.ArchivalMetadata {
 // GetArchiverProvider return archival provider
 func (h *Impl) GetArchiverProvider() provider.ArchiverProvider {
 	return h.archiverProvider
+}
+
+// GetDomainReplicationQueue return domain replication queue
+func (h *Impl) GetDomainReplicationQueue() domain.ReplicationQueue {
+	return h.domainReplicationQueue
 }
 
 // membership infos
@@ -568,11 +587,6 @@ func (h *Impl) GetTaskManager() persistence.TaskManager {
 // GetVisibilityManager return visibility manager
 func (h *Impl) GetVisibilityManager() persistence.VisibilityManager {
 	return h.visibilityMgr
-}
-
-// GetDomainReplicationQueue return domain replication queue
-func (h *Impl) GetDomainReplicationQueue() persistence.DomainReplicationQueue {
-	return h.persistenceBean.GetDomainReplicationQueue()
 }
 
 // GetShardManager return shard manager
